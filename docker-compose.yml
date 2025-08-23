@@ -1,0 +1,81 @@
+version: '3.8'
+
+networks:
+  letzgo-network:
+    driver: bridge
+
+services:
+  # ===========================================================================
+  # Databases
+  # ===========================================================================
+  postgres:
+    image: timescale/timescaledb-ha:pg14-latest
+    container_name: letzgo-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres123
+      - TIMESCALEDB_TELEMETRY=off
+    volumes:
+      - letzgo-postgres-data:/var/lib/postgresql/data
+      # Mount initialization scripts
+      - ./00-init-dbs.sh:/docker-entrypoint-initdb.d/00-init-dbs.sh
+      - ../user-service/src/database/schema.sql:/docker-entrypoint-initdb.d/01-user-schema.sql
+      - ../user-service/src/database/stories.sql:/docker-entrypoint-initdb.d/01b-user-stories.sql
+      - ../event-service/src/database/schema.sql:/docker-entrypoint-initdb.d/02-event-schema.sql
+      - ./02-create-hypertable.sql:/docker-entrypoint-initdb.d/03-create-hypertable.sql
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:6.0
+    container_name: letzgo-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - letzgo-mongodb-data:/data/db
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: letzgo-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - letzgo-redis-data:/data
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+
+  # ===========================================================================
+  # Messaging
+  # ===========================================================================
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: letzgo-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin123
+    volumes:
+      - letzgo-rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+
+volumes:
+  letzgo-postgres-data:
+  letzgo-mongodb-data:
+  letzgo-redis-data:
+  letzgo-rabbitmq-data: 
