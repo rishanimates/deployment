@@ -9,7 +9,7 @@ set -e
 
 # --- Colors for logging ---
 C_BLUE="\033[0;34m"
-C_GREEN="\033[0;32m"
+C_GREEN="\033[0;32m"g
 C_RED="\033[0;31m"
 C_YELLOW="\033[0;33m"
 C_RESET="\033[0m"
@@ -284,19 +284,34 @@ wait_for_infrastructure() {
         log_info "Health check attempt $attempt/$max_attempts"
         
         # Check if all infrastructure services are healthy
-        unhealthy_count=$(docker-compose -f "$DEPLOY_DIR/docker-compose.infrastructure.yml" ps | grep -c "unhealthy\|starting" || echo "0")
+        unhealthy_services=$(docker-compose -f "$DEPLOY_DIR/docker-compose.infrastructure.yml" ps | grep "unhealthy\|starting" || true)
         
-        if [ "$unhealthy_count" -eq 0 ]; then
+        if [ -z "$unhealthy_services" ]; then
             log_success "All infrastructure services are healthy"
             return 0
         else
             log_info "Infrastructure services still starting... waiting 10 seconds"
+            
+            # Show current status for debugging
+            if [ $attempt -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
+                log_info "Current service status:"
+                docker-compose -f "$DEPLOY_DIR/docker-compose.infrastructure.yml" ps || true
+            fi
+            
             sleep 10
             attempt=$((attempt + 1))
         fi
     done
     
+    # Final status check before failing
     log_error "Infrastructure services failed to become healthy within timeout"
+    log_info "Final service status:"
+    docker-compose -f "$DEPLOY_DIR/docker-compose.infrastructure.yml" ps || true
+    
+    log_info "Container logs for debugging:"
+    docker-compose -f "$DEPLOY_DIR/docker-compose.infrastructure.yml" logs --tail=20 || true
+    
+    return 1
 }
 
 # --- Initialize databases ---
