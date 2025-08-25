@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'deployment/**'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
     inputs:
       environment:
@@ -173,6 +174,16 @@ jobs:
           ENVEOF
             echo "⚠️  DEFAULT ENVIRONMENT CREATED - PLEASE UPDATE WITH REAL VALUES!"
           fi
+          
+          # Check for port conflicts and clean up
+          echo "🔍 Checking for port conflicts..."
+          netstat -tlnp | grep -E ":5432|:27017|:6379|:5672" || echo "No conflicts found"
+          
+          # Stop any existing containers that might conflict
+          docker ps -q --filter "publish=5432" | xargs -r docker stop || true
+          docker ps -q --filter "publish=27017" | xargs -r docker stop || true
+          docker ps -q --filter "publish=6379" | xargs -r docker stop || true
+          docker ps -q --filter "publish=5672" | xargs -r docker stop || true
           
           # Run infrastructure deployment (databases only)
           cd "${{ env.DEPLOY_PATH }}"

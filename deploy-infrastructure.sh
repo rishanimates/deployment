@@ -92,8 +92,38 @@ stop_infrastructure() {
         log_success "Development infrastructure stopped"
     fi
     
+    # Stop infrastructure-only compose if it exists
+    if [ -f "docker-compose.infrastructure.yml" ]; then
+        docker-compose -f docker-compose.infrastructure.yml down || true
+        log_success "Infrastructure-only services stopped"
+    fi
+    
     # Remove any orphaned containers
     docker container prune -f || true
+}
+
+# --- Clean up conflicting services ---
+cleanup_conflicting_services() {
+    log_info "Cleaning up conflicting services..."
+    
+    # Run port cleanup if script exists
+    if [ -f "$DEPLOY_DIR/cleanup-ports.sh" ]; then
+        log_info "Running port cleanup script..."
+        bash "$DEPLOY_DIR/cleanup-ports.sh" || true
+    else
+        # Basic cleanup if script doesn't exist
+        log_info "Stopping any containers using required ports..."
+        
+        # Stop containers using our ports
+        docker ps --format "table {{.Names}}\t{{.Ports}}" | grep -E "5432|27017|6379|5672" | awk '{print $1}' | grep -v NAMES | xargs -r docker stop || true
+        
+        # Kill processes using ports
+        for port in 5432 27017 6379 5672 15672; do
+            lsof -ti:$port 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+        done
+    fi
+    
+    log_success "Conflicting services cleanup completed"
 }
 
 # --- Load environment variables ---
@@ -351,6 +381,7 @@ main() {
     setup_directories
     backup_current_infrastructure
     stop_infrastructure
+    cleanup_conflicting_services
     load_environment
     pull_images
     create_infrastructure_compose
