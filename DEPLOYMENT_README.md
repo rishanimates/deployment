@@ -91,29 +91,44 @@ deployment/
 Triggered on: Pull requests and pushes to `develop`
 
 - **Linting**: ESLint checks for all services
-- **Building**: Docker image builds for each service
-- **Testing**: Unit and integration tests
+- **Configuration Validation**: Validates Docker Compose and deployment scripts
+- **Service Testing**: Unit and integration tests with database services
 - **Security**: npm audit and Snyk scanning
 - **Dependencies**: Check for outdated packages
 
-### Continuous Deployment (CD)
-Triggered on: Pushes to `main` branch
+### Infrastructure Deployment
+Triggered on: Changes to `deployment/**` or manual dispatch
 
-1. **Build Phase**:
-   - Install dependencies
-   - Run tests
-   - Create deployment package
-   - Upload artifacts
+1. **Prepare Phase**:
+   - Package infrastructure files
+   - Copy database schemas
+   - Create deployment artifact
 
 2. **Deploy Phase**:
-   - Copy files to VPS
-   - Stop current services
-   - Deploy new version
-   - Start services
-   - Verify deployment
+   - Deploy databases (PostgreSQL, MongoDB, Redis, RabbitMQ)
+   - Initialize database schemas
+   - Verify infrastructure health
 
-3. **Notification Phase**:
-   - Send deployment status notifications
+### Service Deployment
+Triggered on: Changes to service directories or manual dispatch
+
+1. **Detection Phase**:
+   - Automatically detect changed services
+   - Support manual service selection
+
+2. **Build Phase**:
+   - Build and test individual services
+   - Create Docker images
+   - Upload service artifacts
+
+3. **Deploy Phase**:
+   - Deploy services in parallel (max 2 at a time)
+   - Rolling deployment with health checks
+   - Update Nginx configuration
+
+4. **Verification Phase**:
+   - Verify all deployed services are healthy
+   - Show deployment status
 
 ### Rollback
 Manually triggered via GitHub Actions
