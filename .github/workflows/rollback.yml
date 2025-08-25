@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     environment: 
-      name: production
+      name: staging
       url: http://103.168.19.241
     
     steps:
@@ -281,7 +281,7 @@ jobs:
         run: |
           echo "✅ Rollback successful!"
           echo "Rolled back to backup: ${{ github.event.inputs.backup_timestamp }}"
-          echo "Environment: production"
+          echo "Environment: staging"
           echo "URL: http://103.168.19.241"
 
       - name: Notify failure

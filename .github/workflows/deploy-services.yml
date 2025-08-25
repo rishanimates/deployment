@@ -20,11 +20,11 @@ on:
       environment:
         description: 'Deployment environment'
         required: true
-        default: 'production'
+        default: 'staging'
         type: choice
         options:
-        - production
         - staging
+        - production
 
 env:
   NODE_VERSION: '18'
@@ -154,7 +154,7 @@ jobs:
     needs: [detect-changes, build]
     if: needs.detect-changes.outputs.services != ''
     environment: 
-      name: production
+      name: staging
       url: http://103.168.19.241
     
     strategy:
@@ -225,7 +225,7 @@ jobs:
             --network letzgo-network \
             -p \$PORT:\$PORT \
             --env-file .env \
-            -e NODE_ENV=production \
+            -e NODE_ENV=staging \
             -e PORT=\$PORT \
             -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
             -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
@@ -425,7 +425,7 @@ jobs:
         run: |
           echo "✅ Service deployment successful!"
           echo "Services deployed: ${{ needs.detect-changes.outputs.services }}"
-          echo "Environment: production"
+          echo "Environment: staging"
           echo "VPS: 103.168.19.241"
 
       - name: Notify failure
