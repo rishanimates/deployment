@@ -31,7 +31,7 @@ jobs:
         uses: peter-evans/repository-dispatch@v2
         with:
           token: ${{ secrets.DEPLOYMENT_TOKEN }}
-          repository: rishanimates/auth-service
+          repository: rishanimates/deployment
           event-type: ${{ steps.env.outputs.dispatch_type }}
           client-payload: |
             {
@@ -49,4 +49,4 @@ jobs:
           echo "🚀 Triggered ${{ steps.env.outputs.environment }} deployment for chat-service"
           echo "Branch: ${{ github.ref_name }}"
           echo "Commit: ${{ github.sha }}"
-          echo "Deployment repo: rishanimates/auth-service"
+          echo "Deployment repo: rishanimates/deployment"

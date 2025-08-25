@@ -9,7 +9,7 @@ set -e
 
 SERVICE_NAME=$(basename $(pwd))
 GITHUB_ORG="rishanimates"
-DEPLOYMENT_REPO="auth-service"
+DEPLOYMENT_REPO="deployment"
 
 echo "Setting up webhook for service: $SERVICE_NAME"
 

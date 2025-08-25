@@ -25,7 +25,7 @@ For each service repository (rishanimates/auth-service, rishanimates/user-servic
 
 ### 3. Add Token to Deployment Repository
 
-In your deployment repository (rishanimates/auth-service):
+In your deployment repository (rishanimates/deployment):
 
 1. Go to repository → Settings → Secrets and variables → Actions
 2. Add these secrets if not already present:
