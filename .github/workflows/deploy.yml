@@ -1,8 +1,10 @@
-name: CD - Deploy to Production
+name: Infrastructure Deployment
 
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'deployment/**'
   workflow_dispatch:
     inputs:
       environment:
@@ -15,15 +17,14 @@ on:
         - staging
 
 env:
-  NODE_VERSION: '18'
   DEPLOY_PATH: '/opt/letzgo'
 
 jobs:
   # ===========================================================================
-  # Build and Push Docker Images
+  # Prepare Infrastructure Deployment
   # ===========================================================================
-  build:
-    name: Build and Test
+  prepare:
+    name: Prepare Infrastructure
     runs-on: ubuntu-latest
     
     outputs:
@@ -40,75 +41,66 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Generated version: $VERSION"
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-
-      - name: Install dependencies and run tests
+      - name: Create infrastructure deployment package
         run: |
-          services=("auth-service" "user-service" "chat-service" "event-service" "shared-service" "splitz-service")
-          for service in "${services[@]}"; do
-            echo "Processing $service..."
-            cd "$service"
-            npm ci
-            # Run tests if they exist
-            if npm run test --if-present; then
-              echo "Tests passed for $service"
-            else
-              echo "No tests or tests failed for $service"
-            fi
-            cd ..
-          done
-
-      - name: Create deployment archive
-        run: |
-          # Create a clean deployment package
-          mkdir -p /tmp/letzgo-deployment
+          # Create infrastructure deployment package
+          mkdir -p /tmp/letzgo-infrastructure
           
-          # Copy all service directories
-          cp -r auth-service /tmp/letzgo-deployment/
-          cp -r user-service /tmp/letzgo-deployment/
-          cp -r chat-service /tmp/letzgo-deployment/
-          cp -r event-service /tmp/letzgo-deployment/
-          cp -r shared-service /tmp/letzgo-deployment/
-          cp -r splitz-service /tmp/letzgo-deployment/
+          # Copy only deployment files (no services)
+          cp -r deployment/* /tmp/letzgo-infrastructure/
           
-          # Copy deployment files
-          cp -r deployment/* /tmp/letzgo-deployment/
+          # Copy database schemas from services
+          mkdir -p /tmp/letzgo-infrastructure/schemas
           
-          # Remove node_modules from services to reduce size
-          find /tmp/letzgo-deployment -name "node_modules" -type d -exec rm -rf {} + || true
-          find /tmp/letzgo-deployment -name ".git" -type d -exec rm -rf {} + || true
+          # Copy schemas if they exist
+          if [ -f "user-service/src/database/schema.sql" ]; then
+            cp "user-service/src/database/schema.sql" /tmp/letzgo-infrastructure/schemas/user-schema.sql
+            echo "✅ Copied user-service schema"
+          fi
+          
+          if [ -f "user-service/src/database/stories.sql" ]; then
+            cp "user-service/src/database/stories.sql" /tmp/letzgo-infrastructure/schemas/user-stories.sql
+            echo "✅ Copied user-service stories"
+          fi
+          
+          if [ -f "event-service/src/database/schema.sql" ]; then
+            cp "event-service/src/database/schema.sql" /tmp/letzgo-infrastructure/schemas/event-schema.sql
+            echo "✅ Copied event-service schema"
+          fi
+          
+          # List what we're packaging (for debugging)
+          echo "📦 Infrastructure package contents:"
+          find /tmp/letzgo-infrastructure -type f | head -20
           
           # Create tarball
           cd /tmp
-          tar -czf letzgo-deployment.tar.gz letzgo-deployment/
+          tar -czf letzgo-infrastructure.tar.gz letzgo-infrastructure/
+          
+          echo "📦 Infrastructure package created ($(du -h letzgo-infrastructure.tar.gz | cut -f1))"
 
-      - name: Upload deployment artifact
+      - name: Upload infrastructure artifact
         uses: actions/upload-artifact@v4
         with:
-          name: letzgo-deployment-${{ steps.version.outputs.version }}
-          path: /tmp/letzgo-deployment.tar.gz
+          name: letzgo-infrastructure-${{ steps.version.outputs.version }}
+          path: /tmp/letzgo-infrastructure.tar.gz
           retention-days: 30
 
   # ===========================================================================
-  # Deploy to Production
+  # Deploy Infrastructure to Production
   # ===========================================================================
   deploy:
-    name: Deploy to Production VPS
+    name: Deploy Infrastructure to VPS
     runs-on: ubuntu-latest
-    needs: build
+    needs: prepare
     environment: 
       name: production
       url: http://103.168.19.241
     
     steps:
-      - name: Download deployment artifact
+      - name: Download infrastructure artifact
         uses: actions/download-artifact@v4
         with:
-          name: letzgo-deployment-${{ needs.build.outputs.version }}
+          name: letzgo-infrastructure-${{ needs.prepare.outputs.version }}
 
       - name: Setup SSH
         run: |
@@ -117,29 +109,37 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Copy files to VPS
+      - name: Copy infrastructure files to VPS
         run: |
           scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            letzgo-deployment.tar.gz \
+            letzgo-infrastructure.tar.gz \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
 
-      - name: Deploy on VPS
+      - name: Deploy infrastructure on VPS
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           
           set -e
           
-          echo "🚀 Starting deployment process..."
+          echo "🚀 Starting infrastructure deployment..."
           
-          # Extract deployment files
+          # Extract infrastructure files
           cd /tmp
-          tar -xzf letzgo-deployment.tar.gz
+          tar -xzf letzgo-infrastructure.tar.gz
+          
+          # Create deployment directory
+          mkdir -p "${{ env.DEPLOY_PATH }}"
+          
+          # Copy infrastructure files
+          cp -r /tmp/letzgo-infrastructure/* "${{ env.DEPLOY_PATH }}/"
+          
+          # Make scripts executable
+          chmod +x "${{ env.DEPLOY_PATH }}"/*.sh
           
           # Create environment file if it doesn't exist
           if [ ! -f "${{ env.DEPLOY_PATH }}/.env" ]; then
             echo "⚠️  Creating default environment file..."
-            mkdir -p "${{ env.DEPLOY_PATH }}"
             cat > "${{ env.DEPLOY_PATH }}/.env" << 'ENVEOF'
           # Generated environment file - PLEASE UPDATE WITH REAL VALUES
           POSTGRES_PASSWORD=postgres123_change_me
@@ -155,48 +155,54 @@ jobs:
             echo "⚠️  DEFAULT ENVIRONMENT CREATED - PLEASE UPDATE WITH REAL VALUES!"
           fi
           
-          # Run deployment script
-          cd /tmp/letzgo-deployment
-          chmod +x deploy.sh
-          ./deploy.sh
+          # Run infrastructure deployment (databases only)
+          cd "${{ env.DEPLOY_PATH }}"
+          ./deploy-infrastructure.sh
           
-          echo "✅ Deployment completed successfully!"
+          echo "✅ Infrastructure deployment completed successfully!"
           EOF
 
-      - name: Verify deployment
+      - name: Verify infrastructure deployment
         run: |
-          # Wait for services to start
-          sleep 60
+          # Wait for databases to start
+          sleep 30
           
-          # Check if services are responding
+          # Check if infrastructure is running
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           
-          echo "🔍 Verifying deployment..."
+          echo "🔍 Verifying infrastructure deployment..."
           
-          # Check if main services are running
-          if curl -f -s http://localhost/health > /dev/null; then
-            echo "✅ API Gateway is responding"
-          else
-            echo "❌ API Gateway is not responding"
-            exit 1
-          fi
+          # Check if databases are running
+          databases=("letzgo-postgres:5432" "letzgo-mongodb:27017" "letzgo-redis:6379" "letzgo-rabbitmq:5672")
+          healthy_dbs=0
           
-          # Check individual services
-          services=("3000" "3001" "3002" "3003" "3004" "3005")
-          for port in "${services[@]}"; do
-            if curl -f -s "http://localhost:$port/health" > /dev/null; then
-              echo "✅ Service on port $port is responding"
+          for db in "${databases[@]}"; do
+            container_name=$(echo $db | cut -d: -f1)
+            port=$(echo $db | cut -d: -f2)
+            
+            if docker ps | grep -q "$container_name"; then
+              echo "✅ $container_name is running"
+              healthy_dbs=$((healthy_dbs + 1))
             else
-              echo "⚠️  Service on port $port is not responding"
+              echo "❌ $container_name is not running"
             fi
           done
           
           # Show running containers
-          echo "📋 Running containers:"
-          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          echo "📋 Running infrastructure containers:"
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep letzgo || echo "No letzgo containers found"
           
-          echo "🎉 Deployment verification completed!"
+          if [ $healthy_dbs -ge 3 ]; then
+            echo "✅ Infrastructure deployment verification passed"
+          else
+            echo "❌ Infrastructure deployment verification failed"
+            echo "📋 All containers:"
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            exit 1
+          fi
+          
+          echo "🎉 Infrastructure is ready for service deployments!"
           EOF
 
       - name: Cleanup
@@ -208,44 +214,40 @@ jobs:
           # Clean up temporary files on VPS
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "rm -f /tmp/letzgo-deployment.tar.gz; rm -rf /tmp/letzgo-deployment" || true
+            "rm -f /tmp/letzgo-infrastructure.tar.gz; rm -rf /tmp/letzgo-infrastructure" || true
 
   # ===========================================================================
   # Post-deployment notifications
   # ===========================================================================
   notify:
-    name: Notify Deployment Status
+    name: Notify Infrastructure Deployment Status
     runs-on: ubuntu-latest
-    needs: [build, deploy]
+    needs: [prepare, deploy]
     if: always()
     
     steps:
       - name: Notify success
         if: needs.deploy.result == 'success'
         run: |
-          echo "✅ Deployment successful!"
-          echo "Version: ${{ needs.build.outputs.version }}"
+          echo "✅ Infrastructure deployment successful!"
+          echo "Version: ${{ needs.prepare.outputs.version }}"
           echo "Environment: production"
-          echo "URL: http://103.168.19.241"
+          echo "Infrastructure: Databases and messaging services are ready"
+          echo "VPS: http://103.168.19.241"
+          echo ""
+          echo "🔄 Next steps:"
+          echo "1. Deploy services using the 'Deploy Services' workflow"
+          echo "2. Or push changes to service directories to trigger automatic deployment"
 
       - name: Notify failure
         if: needs.deploy.result == 'failure'
         run: |
-          echo "❌ Deployment failed!"
-          echo "Version: ${{ needs.build.outputs.version }}"
+          echo "❌ Infrastructure deployment failed!"
+          echo "Version: ${{ needs.prepare.outputs.version }}"
           echo "Please check the deployment logs for details."
-
-      # Uncomment and configure these if you want Slack/Discord notifications
-      # - name: Slack Notification
-      #   if: always()
-      #   uses: 8398a7/action-slack@v3
-      #   with:
-      #     status: ${{ needs.deploy.result }}
-      #     webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-      
-      # - name: Discord Notification
-      #   if: always()
-      #   uses: sarisia/actions-status-discord@v1
-      #   with:
-      #     webhook: ${{ secrets.DISCORD_WEBHOOK }}
-      #     status: ${{ needs.deploy.result }}
+          echo ""
+          echo "🔧 Troubleshooting:"
+          echo "1. Check VPS connectivity and SSH access"
+          echo "2. Verify environment variables in .env file"
+          echo "3. Check Docker service status on VPS"
+          echo "4. Review deployment logs on VPS: /opt/letzgo/logs/"
