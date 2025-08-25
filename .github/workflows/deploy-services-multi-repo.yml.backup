@@ -1,0 +1,429 @@
+name: Deploy Services (Multi-Repository)
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to deploy (comma-separated: auth-service,user-service,chat-service,event-service,shared-service,splitz-service)'
+        required: true
+        default: 'all'
+        type: string
+      service_branches:
+        description: 'Branches to deploy (format: auth-service:main,user-service:develop). Leave empty to use main for all'
+        required: false
+        type: string
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+env:
+  DEPLOY_PATH: '/opt/letzgo'
+
+jobs:
+  # ===========================================================================
+  # Setup Service Configuration
+  # ===========================================================================
+  setup:
+    name: Setup Service Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      services: ${{ steps.config.outputs.services }}
+    
+    steps:
+      - name: Configure service repositories
+        id: config
+        run: |
+          # Define service repository mappings
+          # Update these URLs to match your actual repositories
+          declare -A SERVICE_REPOS=(
+            ["auth-service"]="https://github.com/your-org/auth-service.git"
+            ["user-service"]="https://github.com/your-org/user-service.git"
+            ["chat-service"]="https://github.com/your-org/chat-service.git"
+            ["event-service"]="https://github.com/your-org/event-service.git"
+            ["shared-service"]="https://github.com/your-org/shared-service.git"
+            ["splitz-service"]="https://github.com/your-org/splitz-service.git"
+          )
+          
+          # Parse service branches input
+          declare -A SERVICE_BRANCHES
+          if [ -n "${{ github.event.inputs.service_branches }}" ]; then
+            IFS=',' read -ra BRANCH_PAIRS <<< "${{ github.event.inputs.service_branches }}"
+            for pair in "${BRANCH_PAIRS[@]}"; do
+              service=$(echo "$pair" | cut -d':' -f1)
+              branch=$(echo "$pair" | cut -d':' -f2)
+              SERVICE_BRANCHES["$service"]="$branch"
+            done
+          fi
+          
+          # Determine services to deploy
+          if [ "${{ github.event.inputs.services }}" = "all" ]; then
+            SERVICES="auth-service,user-service,chat-service,event-service,shared-service,splitz-service"
+          else
+            SERVICES="${{ github.event.inputs.services }}"
+          fi
+          
+          # Create matrix configuration
+          MATRIX_SERVICES=""
+          IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+          
+          for service in "${SERVICE_ARRAY[@]}"; do
+            repo_url="${SERVICE_REPOS[$service]}"
+            branch="${SERVICE_BRANCHES[$service]:-main}"
+            
+            if [ -n "$repo_url" ]; then
+              if [ -n "$MATRIX_SERVICES" ]; then
+                MATRIX_SERVICES="$MATRIX_SERVICES,"
+              fi
+              MATRIX_SERVICES="$MATRIX_SERVICES{\"service\":\"$service\",\"repo\":\"$repo_url\",\"branch\":\"$branch\"}"
+            else
+              echo "Warning: No repository configured for $service"
+            fi
+          done
+          
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+          echo "matrix={\"include\":[$MATRIX_SERVICES]}" >> $GITHUB_OUTPUT
+          
+          echo "Services to deploy: $SERVICES"
+          echo "Matrix: {\"include\":[$MATRIX_SERVICES]}"
+
+  # ===========================================================================
+  # Build Services from Separate Repositories
+  # ===========================================================================
+  build:
+    name: Build Service
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.services != ''
+    
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout ${{ matrix.service }} repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ matrix.service }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies for ${{ matrix.service }}
+        run: |
+          cd ${{ matrix.service }}
+          npm ci
+
+      - name: Run tests for ${{ matrix.service }}
+        run: |
+          cd ${{ matrix.service }}
+          npm test || echo "No tests or tests failed for ${{ matrix.service }}"
+
+      - name: Build Docker image for ${{ matrix.service }}
+        run: |
+          cd ${{ matrix.service }}
+          
+          # Create Dockerfile if it doesn't exist
+          if [ ! -f "Dockerfile" ]; then
+            echo "Creating default Dockerfile for ${{ matrix.service }}"
+            cat > Dockerfile << 'EOF'
+          FROM node:18-alpine
+          
+          WORKDIR /app
+          
+          # Copy package files
+          COPY package*.json ./
+          
+          # Install dependencies
+          RUN npm ci --only=production
+          
+          # Copy source code
+          COPY . .
+          
+          # Create logs directory
+          RUN mkdir -p logs
+          
+          # Expose port
+          EXPOSE 3000
+          
+          # Health check
+          HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+            CMD curl -f http://localhost:3000/health || exit 1
+          
+          # Start application
+          CMD ["npm", "start"]
+          EOF
+          fi
+          
+          # Build Docker image
+          docker build -t letzgo-${{ matrix.service }}:latest .
+          
+          # Save image as artifact
+          docker save letzgo-${{ matrix.service }}:latest > ../letzgo-${{ matrix.service }}-image.tar
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: letzgo-${{ matrix.service }}-image
+          path: letzgo-${{ matrix.service }}-image.tar
+          retention-days: 1
+
+  # ===========================================================================
+  # Deploy Services to VPS
+  # ===========================================================================
+  deploy:
+    name: Deploy Services to VPS
+    runs-on: ubuntu-latest
+    needs: [setup, build]
+    if: needs.setup.outputs.services != ''
+    environment: 
+      name: staging
+      url: http://103.168.19.241
+    
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+      fail-fast: false
+      max-parallel: 2
+    
+    steps:
+      - name: Download Docker image for ${{ matrix.service }}
+        uses: actions/download-artifact@v4
+        with:
+          name: letzgo-${{ matrix.service }}-image
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy Docker image to VPS
+        run: |
+          scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            letzgo-${{ matrix.service }}-image.tar \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
+
+      - name: Deploy ${{ matrix.service }} on VPS
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+          
+          set -e
+          
+          echo "🚀 Deploying ${{ matrix.service }} from repository ${{ matrix.repo }}..."
+          
+          # Load Docker image
+          docker load < /tmp/letzgo-${{ matrix.service }}-image.tar
+          
+          # Stop existing container if running
+          docker stop letzgo-${{ matrix.service }} || true
+          docker rm letzgo-${{ matrix.service }} || true
+          
+          # Load environment variables
+          cd "${{ env.DEPLOY_PATH }}"
+          if [ -f ".env" ]; then
+            set -a
+            source .env
+            set +a
+          else
+            echo "❌ Environment file not found!"
+            exit 1
+          fi
+          
+          # Determine service port
+          case "${{ matrix.service }}" in
+            "auth-service") PORT=3000 ;;
+            "user-service") PORT=3001 ;;
+            "chat-service") PORT=3002 ;;
+            "event-service") PORT=3003 ;;
+            "shared-service") PORT=3004 ;;
+            "splitz-service") PORT=3005 ;;
+            *) echo "Unknown service: ${{ matrix.service }}"; exit 1 ;;
+          esac
+          
+          # Run new container
+          docker run -d \
+            --name letzgo-${{ matrix.service }} \
+            --network letzgo-network \
+            -p \$PORT:\$PORT \
+            --env-file .env \
+            -e NODE_ENV=staging \
+            -e PORT=\$PORT \
+            -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
+            -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
+            --restart unless-stopped \
+            letzgo-${{ matrix.service }}:latest
+          
+          echo "✅ ${{ matrix.service }} deployed successfully from ${{ matrix.repo }}!"
+          
+          # Clean up image file
+          rm -f /tmp/letzgo-${{ matrix.service }}-image.tar
+          EOF
+
+      - name: Wait for ${{ matrix.service }} to be healthy
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+          
+          case "${{ matrix.service }}" in
+            "auth-service") PORT=3000 ;;
+            "user-service") PORT=3001 ;;
+            "chat-service") PORT=3002 ;;
+            "event-service") PORT=3003 ;;
+            "shared-service") PORT=3004 ;;
+            "splitz-service") PORT=3005 ;;
+          esac
+          
+          echo "⏳ Waiting for ${{ matrix.service }} to be healthy on port \$PORT..."
+          
+          max_attempts=30
+          attempt=1
+          
+          while [ \$attempt -le \$max_attempts ]; do
+            if curl -f -s http://localhost:\$PORT/health > /dev/null 2>&1; then
+              echo "✅ ${{ matrix.service }} is healthy!"
+              break
+            fi
+            
+            if [ \$attempt -eq \$max_attempts ]; then
+              echo "❌ ${{ matrix.service }} failed to become healthy"
+              docker logs letzgo-${{ matrix.service }} --tail 50
+              exit 1
+            fi
+            
+            echo "Attempt \$attempt/\$max_attempts - waiting 10 seconds..."
+            sleep 10
+            attempt=\$((attempt + 1))
+          done
+          EOF
+
+      - name: Cleanup SSH
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+
+  # ===========================================================================
+  # Verify Deployment
+  # ===========================================================================
+  verify:
+    name: Verify Multi-Repo Service Deployment
+    runs-on: ubuntu-latest
+    needs: [setup, deploy]
+    if: needs.setup.outputs.services != '' && !cancelled()
+    
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Verify deployed services
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+          
+          echo "🔍 Verifying multi-repository service deployment..."
+          
+          SERVICES="${{ needs.setup.outputs.services }}"
+          IFS=',' read -ra SERVICE_ARRAY <<< "$SERVICES"
+          
+          healthy_services=0
+          total_services=${#SERVICE_ARRAY[@]}
+          
+          for service in "${SERVICE_ARRAY[@]}"; do
+            case "$service" in
+              "auth-service") PORT=3000 ;;
+              "user-service") PORT=3001 ;;
+              "chat-service") PORT=3002 ;;
+              "event-service") PORT=3003 ;;
+              "shared-service") PORT=3004 ;;
+              "splitz-service") PORT=3005 ;;
+            esac
+            
+            if curl -f -s "http://localhost:$PORT/health" > /dev/null; then
+              echo "✅ $service is responding on port $PORT"
+              healthy_services=$((healthy_services + 1))
+            else
+              echo "❌ $service is not responding on port $PORT"
+              docker logs letzgo-$service --tail 20
+            fi
+          done
+          
+          echo "📊 $healthy_services out of $total_services services are healthy"
+          
+          # Show running containers
+          echo "📋 Running service containers:"
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep letzgo-
+          
+          if [ $healthy_services -eq $total_services ]; then
+            echo "🎉 All multi-repository services are healthy!"
+          else
+            echo "⚠️  Some services are not healthy"
+            exit 1
+          fi
+          EOF
+
+      - name: Cleanup SSH
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+
+  # ===========================================================================
+  # Cleanup Artifacts
+  # ===========================================================================
+  cleanup:
+    name: Cleanup Artifacts
+    runs-on: ubuntu-latest
+    needs: [setup, verify]
+    if: always() && needs.setup.outputs.services != ''
+    
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    
+    steps:
+      - name: Delete Docker image artifact
+        uses: geekyeggo/delete-artifact@v2
+        with:
+          name: letzgo-${{ matrix.service }}-image
+        continue-on-error: true
+
+  # ===========================================================================
+  # Notify Deployment Status
+  # ===========================================================================
+  notify:
+    name: Notify Multi-Repo Deployment Status
+    runs-on: ubuntu-latest
+    needs: [setup, deploy, verify]
+    if: always() && needs.setup.outputs.services != ''
+    
+    steps:
+      - name: Notify success
+        if: needs.verify.result == 'success'
+        run: |
+          echo "✅ Multi-repository service deployment successful!"
+          echo "Services deployed: ${{ needs.setup.outputs.services }}"
+          echo "Environment: staging"
+          echo "VPS: 103.168.19.241"
+          echo "Each service was deployed from its separate repository"
+
+      - name: Notify failure
+        if: needs.verify.result == 'failure' || needs.deploy.result == 'failure'
+        run: |
+          echo "❌ Multi-repository service deployment failed!"
+          echo "Services: ${{ needs.setup.outputs.services }}"
+          echo "Please check the deployment logs for details."

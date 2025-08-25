@@ -1,0 +1,288 @@
+name: Auto Deploy to Production (main branch)
+
+on:
+  # Trigger when any service repository's main branch is updated
+  repository_dispatch:
+    types: [deploy-production]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: 'Service to deploy (leave empty for webhook trigger)'
+        required: false
+        type: string
+      service_repo:
+        description: 'Service repository URL (leave empty for webhook trigger)'
+        required: false
+        type: string
+
+env:
+  DEPLOY_PATH: '/opt/letzgo'
+
+jobs:
+  # ===========================================================================
+  # Deploy Service to Production
+  # ===========================================================================
+  deploy-production:
+    name: Deploy to Production Environment
+    runs-on: ubuntu-latest
+    environment: 
+      name: production
+      url: http://your-production-server.com
+    
+    steps:
+      - name: Checkout deployment repository
+        uses: actions/checkout@v4
+
+      - name: Parse webhook payload
+        id: parse
+        run: |
+          # Get service info from webhook payload or manual input
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            SERVICE_NAME="${{ github.event.client_payload.service_name }}"
+            SERVICE_REPO="${{ github.event.client_payload.service_repo }}"
+            SERVICE_BRANCH="${{ github.event.client_payload.service_branch || 'main' }}"
+            COMMIT_SHA="${{ github.event.client_payload.commit_sha }}"
+          else
+            SERVICE_NAME="${{ github.event.inputs.service_name }}"
+            SERVICE_REPO="${{ github.event.inputs.service_repo }}"
+            SERVICE_BRANCH="main"
+            COMMIT_SHA="latest"
+          fi
+          
+          echo "service_name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+          echo "service_repo=$SERVICE_REPO" >> $GITHUB_OUTPUT
+          echo "service_branch=$SERVICE_BRANCH" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          
+          echo "Deploying service: $SERVICE_NAME"
+          echo "Repository: $SERVICE_REPO"
+          echo "Branch: $SERVICE_BRANCH"
+          echo "Commit: $COMMIT_SHA"
+
+      - name: Checkout service repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.parse.outputs.service_repo }}
+          ref: ${{ steps.parse.outputs.service_branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: service-code
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: service-code/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd service-code
+          npm ci
+
+      - name: Run tests (production)
+        run: |
+          cd service-code
+          npm test || (echo "❌ Tests failed - blocking production deployment" && exit 1)
+
+      - name: Build Docker image
+        run: |
+          cd service-code
+          
+          # Create Dockerfile if it doesn't exist
+          if [ ! -f "Dockerfile" ]; then
+            echo "Creating production Dockerfile for ${{ steps.parse.outputs.service_name }}"
+            cat > Dockerfile << 'EOF'
+          FROM node:18-alpine
+          
+          WORKDIR /app
+          
+          # Copy package files
+          COPY package*.json ./
+          
+          # Install dependencies
+          RUN npm ci --only=production && npm cache clean --force
+          
+          # Copy source code
+          COPY . .
+          
+          # Create logs directory
+          RUN mkdir -p logs
+          
+          # Create non-root user
+          RUN addgroup -g 1001 -S nodejs
+          RUN adduser -S nextjs -u 1001
+          
+          # Change ownership
+          RUN chown -R nextjs:nodejs /app
+          USER nextjs
+          
+          # Expose port
+          EXPOSE 3000
+          
+          # Health check
+          HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+            CMD curl -f http://localhost:3000/health || exit 1
+          
+          # Start application
+          CMD ["npm", "start"]
+          EOF
+          fi
+          
+          # Build Docker image with production tag
+          docker build -t letzgo-${{ steps.parse.outputs.service_name }}:production .
+          
+          # Save image as artifact
+          docker save letzgo-${{ steps.parse.outputs.service_name }}:production > ../service-image.tar
+
+      - name: Setup SSH (Production)
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.PROD_VPS_PORT }} ${{ secrets.PROD_VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy Docker image to Production VPS
+        run: |
+          scp -P ${{ secrets.PROD_VPS_PORT }} -o StrictHostKeyChecking=no \
+            service-image.tar \
+            ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }}:/tmp/
+
+      - name: Deploy service on Production VPS
+        run: |
+          ssh -p ${{ secrets.PROD_VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }} << EOF
+          
+          set -e
+          
+          SERVICE_NAME="${{ steps.parse.outputs.service_name }}"
+          
+          echo "🚀 Deploying \$SERVICE_NAME to production from main branch..."
+          
+          # Load Docker image
+          docker load < /tmp/service-image.tar
+          
+          # Create backup of current container
+          if docker ps | grep -q "letzgo-\$SERVICE_NAME"; then
+            echo "📦 Creating backup of current \$SERVICE_NAME..."
+            docker commit letzgo-\$SERVICE_NAME letzgo-\$SERVICE_NAME:backup-$(date +%Y%m%d-%H%M%S)
+          fi
+          
+          # Stop existing container if running
+          docker stop letzgo-\$SERVICE_NAME || true
+          docker rm letzgo-\$SERVICE_NAME || true
+          
+          # Load environment variables
+          cd "${{ env.DEPLOY_PATH }}"
+          if [ -f ".env" ]; then
+            set -a
+            source .env
+            set +a
+          else
+            echo "❌ Environment file not found!"
+            exit 1
+          fi
+          
+          # Determine service port
+          case "\$SERVICE_NAME" in
+            "auth-service") PORT=3000 ;;
+            "user-service") PORT=3001 ;;
+            "chat-service") PORT=3002 ;;
+            "event-service") PORT=3003 ;;
+            "shared-service") PORT=3004 ;;
+            "splitz-service") PORT=3005 ;;
+            *) echo "Unknown service: \$SERVICE_NAME"; exit 1 ;;
+          esac
+          
+          # Run new container
+          docker run -d \
+            --name letzgo-\$SERVICE_NAME \
+            --network letzgo-network \
+            -p \$PORT:\$PORT \
+            --env-file .env \
+            -e NODE_ENV=production \
+            -e PORT=\$PORT \
+            -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
+            -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
+            --restart unless-stopped \
+            --memory=512m \
+            --cpus="0.5" \
+            letzgo-\$SERVICE_NAME:production
+          
+          echo "✅ \$SERVICE_NAME deployed successfully to production!"
+          
+          # Clean up image file
+          rm -f /tmp/service-image.tar
+          EOF
+
+      - name: Wait for service to be healthy (Production)
+        run: |
+          ssh -p ${{ secrets.PROD_VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }} << EOF
+          
+          SERVICE_NAME="${{ steps.parse.outputs.service_name }}"
+          
+          case "\$SERVICE_NAME" in
+            "auth-service") PORT=3000 ;;
+            "user-service") PORT=3001 ;;
+            "chat-service") PORT=3002 ;;
+            "event-service") PORT=3003 ;;
+            "shared-service") PORT=3004 ;;
+            "splitz-service") PORT=3005 ;;
+          esac
+          
+          echo "⏳ Waiting for \$SERVICE_NAME to be healthy on production port \$PORT..."
+          
+          max_attempts=60
+          attempt=1
+          
+          while [ \$attempt -le \$max_attempts ]; do
+            if curl -f -s http://localhost:\$PORT/health > /dev/null 2>&1; then
+              echo "✅ \$SERVICE_NAME is healthy on production!"
+              break
+            fi
+            
+            if [ \$attempt -eq \$max_attempts ]; then
+              echo "❌ \$SERVICE_NAME failed to become healthy on production"
+              echo "🔄 Attempting rollback..."
+              
+              # Rollback to backup if exists
+              BACKUP_IMAGE=\$(docker images letzgo-\$SERVICE_NAME --format "table {{.Tag}}" | grep backup | head -1)
+              if [ -n "\$BACKUP_IMAGE" ]; then
+                docker stop letzgo-\$SERVICE_NAME || true
+                docker rm letzgo-\$SERVICE_NAME || true
+                docker run -d \
+                  --name letzgo-\$SERVICE_NAME \
+                  --network letzgo-network \
+                  -p \$PORT:\$PORT \
+                  --env-file .env \
+                  -e NODE_ENV=production \
+                  -e PORT=\$PORT \
+                  --restart unless-stopped \
+                  letzgo-\$SERVICE_NAME:\$BACKUP_IMAGE
+                echo "🔄 Rollback completed"
+              fi
+              
+              docker logs letzgo-\$SERVICE_NAME --tail 50
+              exit 1
+            fi
+            
+            echo "Attempt \$attempt/\$max_attempts - waiting 10 seconds..."
+            sleep 10
+            attempt=\$((attempt + 1))
+          done
+          EOF
+
+      - name: Cleanup SSH
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+
+      - name: Notify deployment success
+        run: |
+          echo "✅ Production deployment successful!"
+          echo "Service: ${{ steps.parse.outputs.service_name }}"
+          echo "Branch: ${{ steps.parse.outputs.service_branch }}"
+          echo "Environment: production"
+          echo "VPS: Production Server"

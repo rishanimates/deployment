@@ -1,0 +1,253 @@
+name: Auto Deploy to Staging (develop branch)
+
+on:
+  # Trigger when any service repository's develop branch is updated
+  repository_dispatch:
+    types: [deploy-staging]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      service_name:
+        description: 'Service to deploy (leave empty for webhook trigger)'
+        required: false
+        type: string
+      service_repo:
+        description: 'Service repository URL (leave empty for webhook trigger)'
+        required: false
+        type: string
+
+env:
+  DEPLOY_PATH: '/opt/letzgo'
+
+jobs:
+  # ===========================================================================
+  # Deploy Service to Staging
+  # ===========================================================================
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    environment: 
+      name: staging
+      url: http://103.168.19.241
+    
+    steps:
+      - name: Checkout deployment repository
+        uses: actions/checkout@v4
+
+      - name: Parse webhook payload
+        id: parse
+        run: |
+          # Get service info from webhook payload or manual input
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            SERVICE_NAME="${{ github.event.client_payload.service_name }}"
+            SERVICE_REPO="${{ github.event.client_payload.service_repo }}"
+            SERVICE_BRANCH="${{ github.event.client_payload.service_branch || 'develop' }}"
+            COMMIT_SHA="${{ github.event.client_payload.commit_sha }}"
+          else
+            SERVICE_NAME="${{ github.event.inputs.service_name }}"
+            SERVICE_REPO="${{ github.event.inputs.service_repo }}"
+            SERVICE_BRANCH="develop"
+            COMMIT_SHA="latest"
+          fi
+          
+          echo "service_name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+          echo "service_repo=$SERVICE_REPO" >> $GITHUB_OUTPUT
+          echo "service_branch=$SERVICE_BRANCH" >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          
+          echo "Deploying service: $SERVICE_NAME"
+          echo "Repository: $SERVICE_REPO"
+          echo "Branch: $SERVICE_BRANCH"
+          echo "Commit: $COMMIT_SHA"
+
+      - name: Checkout service repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.parse.outputs.service_repo }}
+          ref: ${{ steps.parse.outputs.service_branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: service-code
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: service-code/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd service-code
+          npm ci
+
+      - name: Run tests
+        run: |
+          cd service-code
+          npm test || echo "No tests or tests failed for ${{ steps.parse.outputs.service_name }}"
+
+      - name: Build Docker image
+        run: |
+          cd service-code
+          
+          # Create Dockerfile if it doesn't exist
+          if [ ! -f "Dockerfile" ]; then
+            echo "Creating default Dockerfile for ${{ steps.parse.outputs.service_name }}"
+            cat > Dockerfile << 'EOF'
+          FROM node:18-alpine
+          
+          WORKDIR /app
+          
+          # Copy package files
+          COPY package*.json ./
+          
+          # Install dependencies
+          RUN npm ci --only=production
+          
+          # Copy source code
+          COPY . .
+          
+          # Create logs directory
+          RUN mkdir -p logs
+          
+          # Expose port
+          EXPOSE 3000
+          
+          # Health check
+          HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+            CMD curl -f http://localhost:3000/health || exit 1
+          
+          # Start application
+          CMD ["npm", "start"]
+          EOF
+          fi
+          
+          # Build Docker image
+          docker build -t letzgo-${{ steps.parse.outputs.service_name }}:staging .
+          
+          # Save image as artifact
+          docker save letzgo-${{ steps.parse.outputs.service_name }}:staging > ../service-image.tar
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy Docker image to VPS
+        run: |
+          scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            service-image.tar \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
+
+      - name: Deploy service on VPS
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+          
+          set -e
+          
+          SERVICE_NAME="${{ steps.parse.outputs.service_name }}"
+          
+          echo "🚀 Deploying \$SERVICE_NAME to staging from develop branch..."
+          
+          # Load Docker image
+          docker load < /tmp/service-image.tar
+          
+          # Stop existing container if running
+          docker stop letzgo-\$SERVICE_NAME || true
+          docker rm letzgo-\$SERVICE_NAME || true
+          
+          # Load environment variables
+          cd "${{ env.DEPLOY_PATH }}"
+          if [ -f ".env" ]; then
+            set -a
+            source .env
+            set +a
+          else
+            echo "❌ Environment file not found!"
+            exit 1
+          fi
+          
+          # Determine service port
+          case "\$SERVICE_NAME" in
+            "auth-service") PORT=3000 ;;
+            "user-service") PORT=3001 ;;
+            "chat-service") PORT=3002 ;;
+            "event-service") PORT=3003 ;;
+            "shared-service") PORT=3004 ;;
+            "splitz-service") PORT=3005 ;;
+            *) echo "Unknown service: \$SERVICE_NAME"; exit 1 ;;
+          esac
+          
+          # Run new container
+          docker run -d \
+            --name letzgo-\$SERVICE_NAME \
+            --network letzgo-network \
+            -p \$PORT:\$PORT \
+            --env-file .env \
+            -e NODE_ENV=staging \
+            -e PORT=\$PORT \
+            -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
+            -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
+            --restart unless-stopped \
+            letzgo-\$SERVICE_NAME:staging
+          
+          echo "✅ \$SERVICE_NAME deployed successfully to staging!"
+          
+          # Clean up image file
+          rm -f /tmp/service-image.tar
+          EOF
+
+      - name: Wait for service to be healthy
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+          
+          SERVICE_NAME="${{ steps.parse.outputs.service_name }}"
+          
+          case "\$SERVICE_NAME" in
+            "auth-service") PORT=3000 ;;
+            "user-service") PORT=3001 ;;
+            "chat-service") PORT=3002 ;;
+            "event-service") PORT=3003 ;;
+            "shared-service") PORT=3004 ;;
+            "splitz-service") PORT=3005 ;;
+          esac
+          
+          echo "⏳ Waiting for \$SERVICE_NAME to be healthy on port \$PORT..."
+          
+          max_attempts=30
+          attempt=1
+          
+          while [ \$attempt -le \$max_attempts ]; do
+            if curl -f -s http://localhost:\$PORT/health > /dev/null 2>&1; then
+              echo "✅ \$SERVICE_NAME is healthy on staging!"
+              break
+            fi
+            
+            if [ \$attempt -eq \$max_attempts ]; then
+              echo "❌ \$SERVICE_NAME failed to become healthy on staging"
+              docker logs letzgo-\$SERVICE_NAME --tail 50
+              exit 1
+            fi
+            
+            echo "Attempt \$attempt/\$max_attempts - waiting 10 seconds..."
+            sleep 10
+            attempt=\$((attempt + 1))
+          done
+          EOF
+
+      - name: Cleanup SSH
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa
+
+      - name: Notify deployment success
+        run: |
+          echo "✅ Staging deployment successful!"
+          echo "Service: ${{ steps.parse.outputs.service_name }}"
+          echo "Branch: ${{ steps.parse.outputs.service_branch }}"
+          echo "Environment: staging"
+          echo "VPS: http://103.168.19.241"
