@@ -2,6 +2,7 @@ version: '3.8'
 
 networks:
   letzgo-network:
+    name: letzgo-network
     driver: bridge
 
 services:

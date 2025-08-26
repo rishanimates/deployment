@@ -328,34 +328,27 @@ jobs:
             exit 1
           }
           
-          # Ensure Docker network exists (robust check)
+          # Ensure Docker network exists (robust; supports compose-prefixed name)
           echo "🔍 Checking Docker network status..."
-          NETWORK_EXISTS=$(docker network ls --format "{{.Name}}" | grep "^letzgo-network$" | wc -l)
-          
-          if [ "$NETWORK_EXISTS" -eq 0 ]; then
+          NETWORK_NAME="letzgo-network"
+          if docker network ls --format "{{.Name}}" | grep -q "^letzgo_letzgo-network$"; then
+            NETWORK_NAME="letzgo_letzgo-network"
+          elif docker network ls --format "{{.Name}}" | grep -q "^letzgo-network$"; then
+            NETWORK_NAME="letzgo-network"
+          else
             echo "🔗 Creating letzgo-network..."
             docker network create letzgo-network
-            
-            # Verify network was created
-            if docker network inspect letzgo-network >/dev/null 2>&1; then
-              echo "✅ letzgo-network created successfully"
-            else
-              echo "❌ Failed to create letzgo-network"
-              exit 1
-            fi
-          else
-            echo "✅ letzgo-network already exists"
+            NETWORK_NAME="letzgo-network"
           fi
           
-          # Double-check network exists before proceeding
-          if ! docker network inspect letzgo-network >/dev/null 2>&1; then
-            echo "❌ Error: letzgo-network not accessible"
+          # Verify chosen network is accessible
+          if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+            echo "❌ Error: network '$NETWORK_NAME' not accessible"
             echo "📋 Available networks:"
             docker network ls
             exit 1
           fi
-          
-          echo "🔗 Network verification complete"
+          echo "🔗 Using network: $NETWORK_NAME"
           
           # Stop existing container if running
           docker stop letzgo-${{ matrix.service }} || true
@@ -386,7 +379,7 @@ jobs:
           # Run new container
           docker run -d \
             --name letzgo-${{ matrix.service }} \
-            --network letzgo-network \
+            --network "$NETWORK_NAME" \
             -p \$PORT:\$PORT \
             --env-file .env \
             -e NODE_ENV=staging \
