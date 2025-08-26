@@ -99,7 +99,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: ${{ steps.detect-pm.outputs.cache }}
           cache-dependency-path: ${{ steps.detect-pm.outputs.cache-path }}
         if: steps.detect-pm.outputs.cache != ''
@@ -107,7 +107,7 @@ jobs:
       - name: Setup Node.js (no cache)
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
         if: steps.detect-pm.outputs.cache == ''
 
       - name: Install dependencies
@@ -132,7 +132,7 @@ jobs:
           if [ ! -f "Dockerfile" ]; then
             echo "Creating default Dockerfile for ${{ steps.parse.outputs.service_name }}"
             cat > Dockerfile << 'EOF'
-          FROM node:18-alpine
+          FROM node:20-alpine
           
           WORKDIR /app
           
