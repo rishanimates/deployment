@@ -9,7 +9,7 @@ on:
         default: 'all'
         type: string
       service_branches:
-        description: 'Branches to deploy (format: auth-service:main,user-service:develop). Leave empty to use main for all'
+        description: 'Branches to deploy (format: auth-service:main,user-service:develop). Leave empty to use develop for all'
         required: false
         type: string
       environment:
@@ -42,12 +42,12 @@ jobs:
           # Define service repository mappings
           # Update these URLs to match your actual repositories
           declare -A SERVICE_REPOS=(
-            ["auth-service"]="https://github.com/rishanimates/auth-service.git"
-            ["user-service"]="https://github.com/rishanimates/user-service.git"
-            ["chat-service"]="https://github.com/rishanimates/chat-service.git"
-            ["event-service"]="https://github.com/rishanimates/event-service.git"
-            ["shared-service"]="https://github.com/rishanimates/shared-service.git"
-            ["splitz-service"]="https://github.com/rishanimates/splitz-service.git"
+            ["auth-service"]="rishanimates/auth-service"
+            ["user-service"]="rishanimates/user-service"
+            ["chat-service"]="rishanimates/chat-service"
+            ["event-service"]="rishanimates/event-service"
+            ["shared-service"]="rishanimates/shared-service"
+            ["splitz-service"]="rishanimates/splitz-service"
           )
           
           # Parse service branches input
@@ -74,7 +74,7 @@ jobs:
           
           for service in "${SERVICE_ARRAY[@]}"; do
             repo_url="${SERVICE_REPOS[$service]}"
-            branch="${SERVICE_BRANCHES[$service]:-main}"
+            branch="${SERVICE_BRANCHES[$service]:-develop}"
             
             if [ -n "$repo_url" ]; then
               if [ -n "$MATRIX_SERVICES" ]; then
