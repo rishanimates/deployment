@@ -138,15 +138,24 @@ jobs:
           
           # Copy package files
           COPY package*.json ./
+          COPY yarn.lock ./
           
-          # Install dependencies
-          RUN npm ci --only=production
+          # Install dependencies with yarn
+          RUN yarn install --frozen-lockfile --production
           
           # Copy source code
           COPY . .
           
           # Create logs directory
           RUN mkdir -p logs
+          
+          # Create non-root user for security
+          RUN addgroup -g 1001 -S nodejs && \
+              adduser -S appuser -u 1001 -G nodejs
+          
+          # Change ownership
+          RUN chown -R appuser:nodejs /app
+          USER appuser
           
           # Expose port
           EXPOSE 3000
@@ -156,15 +165,45 @@ jobs:
             CMD curl -f http://localhost:3000/health || exit 1
           
           # Start application
-          CMD ["npm", "start"]
+          CMD ["node", "src/server.js"]
           EOF
           fi
           
           # Build Docker image
+          echo "🐳 Building Docker image for ${{ steps.parse.outputs.service_name }}..."
           docker build -t letzgo-${{ steps.parse.outputs.service_name }}:staging .
           
-          # Save image as artifact
-          docker save letzgo-${{ steps.parse.outputs.service_name }}:staging > ../service-image.tar
+          # Verify image was created
+          docker images | grep letzgo-${{ steps.parse.outputs.service_name }}
+          
+          # Save image as artifact with compression and validation
+          echo "📦 Saving Docker image to tar archive..."
+          docker save letzgo-${{ steps.parse.outputs.service_name }}:staging | gzip > ../service-image.tar.gz
+          
+          # Verify tar file was created and is valid
+          echo "🔍 Validating tar archive..."
+          cd ..
+          if [ ! -f "service-image.tar.gz" ]; then
+            echo "❌ Error: service-image.tar.gz was not created"
+            exit 1
+          fi
+          
+          # Check file size (should be > 0 bytes)
+          FILE_SIZE=$(stat -c%s service-image.tar.gz 2>/dev/null || stat -f%z service-image.tar.gz)
+          echo "📊 Archive size: $FILE_SIZE bytes"
+          
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "❌ Error: Archive is empty"
+            exit 1
+          fi
+          
+          # Test tar file integrity
+          if ! gzip -t service-image.tar.gz; then
+            echo "❌ Error: Archive is corrupted"
+            exit 1
+          fi
+          
+          echo "✅ Docker image saved and validated successfully"
 
       - name: Setup SSH
         run: |
@@ -175,9 +214,23 @@ jobs:
 
       - name: Copy Docker image to VPS
         run: |
-          scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            service-image.tar \
+          echo "📤 Copying Docker image to VPS..."
+          
+          # Verify file exists before transfer
+          if [ ! -f "service-image.tar.gz" ]; then
+            echo "❌ Error: service-image.tar.gz not found"
+            exit 1
+          fi
+          
+          # Show file size before transfer
+          ls -lh service-image.tar.gz
+          
+          # Transfer with verbose output and verification
+          scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no -v \
+            service-image.tar.gz \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
+          
+          echo "✅ Docker image transferred successfully"
 
       - name: Deploy service on VPS
         run: |
@@ -190,8 +243,38 @@ jobs:
           
           echo "🚀 Deploying \$SERVICE_NAME to staging from develop branch..."
           
-          # Load Docker image
-          docker load < /tmp/service-image.tar
+          # Verify compressed tar file exists and is valid
+          if [ ! -f "/tmp/service-image.tar.gz" ]; then
+            echo "❌ Error: /tmp/service-image.tar.gz not found on VPS"
+            exit 1
+          fi
+          
+          echo "📊 Archive info:"
+          ls -lh /tmp/service-image.tar.gz
+          
+          # Test archive integrity
+          if ! gzip -t /tmp/service-image.tar.gz; then
+            echo "❌ Error: Archive is corrupted"
+            exit 1
+          fi
+          
+          # Load Docker image from compressed archive
+          echo "📦 Loading Docker image from compressed archive..."
+          gunzip -c /tmp/service-image.tar.gz | docker load
+          
+          # Verify image was loaded
+          docker images | grep letzgo-\$SERVICE_NAME || {
+            echo "❌ Error: Docker image not found after loading"
+            exit 1
+          }
+          
+          # Ensure Docker network exists
+          if ! docker network ls | grep -q letzgo-network; then
+            echo "🔗 Creating letzgo-network..."
+            docker network create letzgo-network
+          else
+            echo "✅ letzgo-network already exists"
+          fi
           
           # Stop existing container if running
           docker stop letzgo-\$SERVICE_NAME || true
@@ -234,8 +317,12 @@ jobs:
           
           echo "✅ \$SERVICE_NAME deployed successfully to staging!"
           
-          # Clean up image file
-          rm -f /tmp/service-image.tar
+          # Clean up compressed image file
+          rm -f /tmp/service-image.tar.gz
+          
+          # Show running containers
+          echo "📋 Running containers:"
+          docker ps | grep letzgo-\$SERVICE_NAME
           EOF
 
       - name: Wait for service to be healthy

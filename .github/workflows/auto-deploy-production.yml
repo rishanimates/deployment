@@ -171,8 +171,34 @@ jobs:
           # Build Docker image with production tag
           docker build -t letzgo-${{ steps.parse.outputs.service_name }}:production .
           
-          # Save image as artifact
-          docker save letzgo-${{ steps.parse.outputs.service_name }}:production > ../service-image.tar
+          # Save image as artifact with compression and validation
+          echo "📦 Saving Docker image to tar archive..."
+          docker save letzgo-${{ steps.parse.outputs.service_name }}:production | gzip > ../service-image.tar.gz
+          
+          # Verify tar file was created and is valid
+          echo "🔍 Validating tar archive..."
+          cd ..
+          if [ ! -f "service-image.tar.gz" ]; then
+            echo "❌ Error: service-image.tar.gz was not created"
+            exit 1
+          fi
+          
+          # Check file size (should be > 0 bytes)
+          FILE_SIZE=$(stat -c%s service-image.tar.gz 2>/dev/null || stat -f%z service-image.tar.gz)
+          echo "📊 Archive size: $FILE_SIZE bytes"
+          
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "❌ Error: Archive is empty"
+            exit 1
+          fi
+          
+          # Test tar file integrity
+          if ! gzip -t service-image.tar.gz; then
+            echo "❌ Error: Archive is corrupted"
+            exit 1
+          fi
+          
+          echo "✅ Docker image saved and validated successfully"
 
       - name: Setup SSH (Production)
         run: |
@@ -183,9 +209,23 @@ jobs:
 
       - name: Copy Docker image to Production VPS
         run: |
-          scp -P ${{ secrets.PROD_VPS_PORT }} -o StrictHostKeyChecking=no \
-            service-image.tar \
+          echo "📤 Copying Docker image to production VPS..."
+          
+          # Verify file exists before transfer
+          if [ ! -f "service-image.tar.gz" ]; then
+            echo "❌ Error: service-image.tar.gz not found"
+            exit 1
+          fi
+          
+          # Show file size before transfer
+          ls -lh service-image.tar.gz
+          
+          # Transfer with verbose output and verification
+          scp -P ${{ secrets.PROD_VPS_PORT }} -o StrictHostKeyChecking=no -v \
+            service-image.tar.gz \
             ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }}:/tmp/
+          
+          echo "✅ Docker image transferred successfully"
 
       - name: Deploy service on Production VPS
         run: |
@@ -198,8 +238,38 @@ jobs:
           
           echo "🚀 Deploying \$SERVICE_NAME to production from main branch..."
           
-          # Load Docker image
-          docker load < /tmp/service-image.tar
+          # Verify compressed tar file exists and is valid
+          if [ ! -f "/tmp/service-image.tar.gz" ]; then
+            echo "❌ Error: /tmp/service-image.tar.gz not found on VPS"
+            exit 1
+          fi
+          
+          echo "📊 Archive info:"
+          ls -lh /tmp/service-image.tar.gz
+          
+          # Test archive integrity
+          if ! gzip -t /tmp/service-image.tar.gz; then
+            echo "❌ Error: Archive is corrupted"
+            exit 1
+          fi
+          
+          # Load Docker image from compressed archive
+          echo "📦 Loading Docker image from compressed archive..."
+          gunzip -c /tmp/service-image.tar.gz | docker load
+          
+          # Verify image was loaded
+          docker images | grep letzgo-\$SERVICE_NAME || {
+            echo "❌ Error: Docker image not found after loading"
+            exit 1
+          }
+          
+          # Ensure Docker network exists
+          if ! docker network ls | grep -q letzgo-network; then
+            echo "🔗 Creating letzgo-network..."
+            docker network create letzgo-network
+          else
+            echo "✅ letzgo-network already exists"
+          fi
           
           # Create backup of current container
           if docker ps | grep -q "letzgo-\$SERVICE_NAME"; then
@@ -250,8 +320,12 @@ jobs:
           
           echo "✅ \$SERVICE_NAME deployed successfully to production!"
           
-          # Clean up image file
-          rm -f /tmp/service-image.tar
+          # Clean up compressed image file
+          rm -f /tmp/service-image.tar.gz
+          
+          # Show running containers
+          echo "📋 Running containers:"
+          docker ps | grep letzgo-\$SERVICE_NAME
           EOF
 
       - name: Wait for service to be healthy (Production)

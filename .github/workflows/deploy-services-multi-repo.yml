@@ -208,14 +208,40 @@ jobs:
           # Build Docker image
           docker build -t letzgo-${{ matrix.service }}:latest .
           
-          # Save image as artifact
-          docker save letzgo-${{ matrix.service }}:latest > ../letzgo-${{ matrix.service }}-image.tar
+          # Save image as artifact with compression and validation
+          echo "📦 Saving Docker image to tar archive..."
+          docker save letzgo-${{ matrix.service }}:latest | gzip > ../letzgo-${{ matrix.service }}-image.tar.gz
+          
+          # Verify tar file was created and is valid
+          echo "🔍 Validating tar archive..."
+          cd ..
+          if [ ! -f "letzgo-${{ matrix.service }}-image.tar.gz" ]; then
+            echo "❌ Error: letzgo-${{ matrix.service }}-image.tar.gz was not created"
+            exit 1
+          fi
+          
+          # Check file size (should be > 0 bytes)
+          FILE_SIZE=$(stat -c%s letzgo-${{ matrix.service }}-image.tar.gz 2>/dev/null || stat -f%z letzgo-${{ matrix.service }}-image.tar.gz)
+          echo "📊 Archive size: $FILE_SIZE bytes"
+          
+          if [ "$FILE_SIZE" -eq 0 ]; then
+            echo "❌ Error: Archive is empty"
+            exit 1
+          fi
+          
+          # Test tar file integrity
+          if ! gzip -t letzgo-${{ matrix.service }}-image.tar.gz; then
+            echo "❌ Error: Archive is corrupted"
+            exit 1
+          fi
+          
+          echo "✅ Docker image saved and validated successfully"
 
       - name: Upload Docker image
         uses: actions/upload-artifact@v4
         with:
           name: letzgo-${{ matrix.service }}-image
-          path: letzgo-${{ matrix.service }}-image.tar
+          path: letzgo-${{ matrix.service }}-image.tar.gz
           retention-days: 1
 
   # ===========================================================================
