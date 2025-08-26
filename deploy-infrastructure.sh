@@ -52,6 +52,91 @@ setup_directories() {
     log_success "Directories created successfully"
 }
 
+# --- Setup environment file ---
+setup_environment_file() {
+    log_info "Setting up environment file..."
+    
+    if [ -f "/opt/letzgo/.env" ]; then
+        log_info "Environment file already exists"
+        return 0
+    fi
+    
+    if [ ! -f "env.template" ]; then
+        log_error "env.template not found. Please ensure it's included in the deployment package."
+        return 1
+    fi
+    
+    log_info "Creating .env file from template with generated passwords..."
+    
+    # Generate secure passwords
+    POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+    MONGODB_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+    REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+    RABBITMQ_PASSWORD=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-25)
+    JWT_SECRET=$(openssl rand -base64 48 | tr -d "=+/" | cut -c1-32)
+    SERVICE_API_KEY=$(openssl rand -base64 48 | tr -d "=+/" | cut -c1-32)
+    
+    # Create .env file with generated values
+    cat > /opt/letzgo/.env << EOF
+# ==============================================================================
+# LetzGo Staging Environment Configuration
+# ==============================================================================
+# Auto-generated on $(date)
+
+# --- Environment ---
+NODE_ENV=staging
+
+# --- Database Passwords ---
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+MONGODB_PASSWORD=$MONGODB_PASSWORD
+REDIS_PASSWORD=$REDIS_PASSWORD
+RABBITMQ_PASSWORD=$RABBITMQ_PASSWORD
+
+# --- Application Secrets ---
+JWT_SECRET=$JWT_SECRET
+SERVICE_API_KEY=$SERVICE_API_KEY
+
+# --- Payment Gateway (Razorpay) ---
+RAZORPAY_KEY_ID=rzp_test_your_key_id_here
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret_here
+
+# --- Storage Configuration ---
+STORAGE_PROVIDER=local
+
+# --- Domain Configuration ---
+DOMAIN_NAME=103.168.19.241
+API_DOMAIN=103.168.19.241
+
+# --- Database Connection URLs ---
+POSTGRES_URL=postgresql://postgres:$POSTGRES_PASSWORD@letzgo-postgres:5432/letzgo_db
+MONGODB_URL=mongodb://admin:$MONGODB_PASSWORD@letzgo-mongodb:27017/letzgo_db?authSource=admin
+REDIS_URL=redis://:$REDIS_PASSWORD@letzgo-redis:6379
+RABBITMQ_URL=amqp://admin:$RABBITMQ_PASSWORD@letzgo-rabbitmq:5672
+
+# --- Service Ports ---
+AUTH_SERVICE_PORT=3000
+USER_SERVICE_PORT=3001
+CHAT_SERVICE_PORT=3002
+EVENT_SERVICE_PORT=3003
+SHARED_SERVICE_PORT=3004
+SPLITZ_SERVICE_PORT=3005
+
+# --- External Service URLs ---
+AUTH_SERVICE_URL=http://letzgo-auth-service:3000
+USER_SERVICE_URL=http://letzgo-user-service:3001
+CHAT_SERVICE_URL=http://letzgo-chat-service:3002
+EVENT_SERVICE_URL=http://letzgo-event-service:3003
+SHARED_SERVICE_URL=http://letzgo-shared-service:3004
+SPLITZ_SERVICE_URL=http://letzgo-splitz-service:3005
+EOF
+    
+    # Set secure permissions
+    chmod 600 /opt/letzgo/.env
+    
+    log_success "Environment file created successfully"
+    log_info "Generated passwords: PostgreSQL, MongoDB, Redis, RabbitMQ, JWT Secret, API Key"
+}
+
 # --- Backup current infrastructure ---
 backup_current_infrastructure() {
     log_info "Creating backup of current infrastructure..."
@@ -394,6 +479,7 @@ main() {
     log_info "Starting infrastructure deployment at $(date)"
     
     setup_directories
+    setup_environment_file
     backup_current_infrastructure
     stop_infrastructure
     cleanup_conflicting_services
