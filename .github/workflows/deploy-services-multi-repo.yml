@@ -119,17 +119,20 @@ jobs:
         run: |
           cd ${{ matrix.service }}
           
+          # Prioritize Yarn as requested
           if [ -f "yarn.lock" ]; then
             echo "pm=yarn" >> $GITHUB_OUTPUT
             echo "cache=yarn" >> $GITHUB_OUTPUT
             echo "cache-path=${{ matrix.service }}/yarn.lock" >> $GITHUB_OUTPUT
             echo "install-cmd=yarn install --frozen-lockfile" >> $GITHUB_OUTPUT
-          elif [ -f "package-lock.json" ]; then
-            echo "pm=npm" >> $GITHUB_OUTPUT
-            echo "cache=npm" >> $GITHUB_OUTPUT
-            echo "cache-path=${{ matrix.service }}/package-lock.json" >> $GITHUB_OUTPUT
-            echo "install-cmd=npm ci" >> $GITHUB_OUTPUT
+          elif [ -f "package.json" ]; then
+            # Use yarn by default for all repos as requested
+            echo "pm=yarn" >> $GITHUB_OUTPUT
+            echo "cache=" >> $GITHUB_OUTPUT
+            echo "cache-path=" >> $GITHUB_OUTPUT
+            echo "install-cmd=yarn install" >> $GITHUB_OUTPUT
           else
+            # Fallback to npm if no package.json
             echo "pm=npm" >> $GITHUB_OUTPUT
             echo "cache=" >> $GITHUB_OUTPUT
             echo "cache-path=" >> $GITHUB_OUTPUT
@@ -160,7 +163,11 @@ jobs:
       - name: Run tests for ${{ matrix.service }}
         run: |
           cd ${{ matrix.service }}
-          npm test || echo "No tests or tests failed for ${{ matrix.service }}"
+          if [ "${{ steps.detect-pm.outputs.pm }}" = "yarn" ]; then
+            yarn test || echo "No tests or tests failed for ${{ matrix.service }}"
+          else
+            npm test || echo "No tests or tests failed for ${{ matrix.service }}"
+          fi
 
       - name: Build Docker image for ${{ matrix.service }}
         run: |
