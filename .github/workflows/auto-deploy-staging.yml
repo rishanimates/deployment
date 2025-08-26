@@ -306,7 +306,7 @@ jobs:
           fi
           
           # Determine service port
-          case "\$SERVICE_NAME" in
+          case "$SERVICE_NAME" in
             "auth-service") PORT=3000 ;;
             "user-service") PORT=3001 ;;
             "chat-service") PORT=3002 ;;
@@ -318,25 +318,25 @@ jobs:
           
           # Run new container
           docker run -d \
-            --name letzgo-\$SERVICE_NAME \
+            --name letzgo-$SERVICE_NAME \
             --network "$NETWORK_NAME" \
-            -p \$PORT:\$PORT \
+            -p $PORT:$PORT \
             --env-file .env \
             -e NODE_ENV=staging \
-            -e PORT=\$PORT \
+            -e PORT=$PORT \
             -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
             -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
             --restart unless-stopped \
-            letzgo-\$SERVICE_NAME:staging
+            letzgo-$SERVICE_NAME:staging
           
-          echo "✅ \$SERVICE_NAME deployed successfully to staging!"
+          echo "✅ $SERVICE_NAME deployed successfully to staging!"
           
           # Clean up compressed image file
           rm -f /tmp/service-image.tar.gz
           
           # Show running containers
           echo "📋 Running containers:"
-          docker ps | grep letzgo-\$SERVICE_NAME
+          docker ps | grep letzgo-$SERVICE_NAME
           EOF
 
       - name: Wait for service to be healthy

@@ -380,10 +380,10 @@ jobs:
           docker run -d \
             --name letzgo-${{ matrix.service }} \
             --network "$NETWORK_NAME" \
-            -p \$PORT:\$PORT \
+            -p $PORT:$PORT \
             --env-file .env \
             -e NODE_ENV=staging \
-            -e PORT=\$PORT \
+            -e PORT=$PORT \
             -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
             -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
             --restart unless-stopped \
