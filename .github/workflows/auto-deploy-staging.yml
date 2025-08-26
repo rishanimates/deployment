@@ -305,6 +305,11 @@ jobs:
             exit 1
           fi
           
+          # Ensure proper permissions for container volumes (non-root user 1001:1001)
+          echo "🔧 Setting container permissions for logs and uploads..."
+          chown -R 1001:1001 logs/ uploads/ 2>/dev/null || true
+          chmod -R 755 logs/ uploads/ 2>/dev/null || true
+          
           # Determine service port
           case "$SERVICE_NAME" in
             "auth-service") PORT=3000 ;;
@@ -363,15 +368,32 @@ jobs:
           attempt=1
           
           while [ \$attempt -le \$max_attempts ]; do
-            if curl -f -s http://localhost:\$PORT/health > /dev/null 2>&1; then
+            # Check if container is running first
+            if ! docker ps | grep -q "letzgo-\$SERVICE_NAME"; then
+              echo "⚠️  Container letzgo-\$SERVICE_NAME is not running"
+              docker ps | grep letzgo- || echo "No letzgo containers running"
+              if [ \$attempt -eq \$max_attempts ]; then
+                echo "❌ Container failed to start"
+                docker logs letzgo-\$SERVICE_NAME --tail 20
+                exit 1
+              fi
+            elif curl -f -s http://localhost:\$PORT/health > /dev/null 2>&1; then
               echo "✅ \$SERVICE_NAME is healthy on staging!"
+              # Show health status for verification
+              curl -s http://localhost:\$PORT/health | head -3 || true
               break
-            fi
-            
-            if [ \$attempt -eq \$max_attempts ]; then
-              echo "❌ \$SERVICE_NAME failed to become healthy on staging"
-              docker logs letzgo-\$SERVICE_NAME --tail 50
-              exit 1
+            else
+              # Service is running but not healthy yet - this is normal for soft dependencies
+              echo "⏳ \$SERVICE_NAME starting... (soft dependencies may be initializing)"
+              if [ \$attempt -eq \$max_attempts ]; then
+                echo "❌ \$SERVICE_NAME failed to become healthy (may have hard dependency issues)"
+                echo "📋 Container status:"
+                docker ps | grep letzgo-\$SERVICE_NAME
+                echo "📋 Recent logs:"
+                docker logs letzgo-\$SERVICE_NAME --tail 20
+                echo "⚠️  Note: Service may still work with soft dependency failures"
+                exit 1
+              fi
             fi
             
             echo "Attempt \$attempt/\$max_attempts - waiting 10 seconds..."

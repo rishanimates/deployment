@@ -368,6 +368,11 @@ jobs:
             exit 1
           fi
           
+          # Ensure proper permissions for container volumes (non-root user 1001:1001)
+          echo "🔧 Setting container permissions for logs and uploads..."
+          chown -R 1001:1001 logs/ uploads/ 2>/dev/null || true
+          chmod -R 755 logs/ uploads/ 2>/dev/null || true
+          
           # Determine service port
           case "$SERVICE_NAME" in
             "auth-service") PORT=3000 ;;

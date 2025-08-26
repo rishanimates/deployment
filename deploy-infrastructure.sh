@@ -49,7 +49,12 @@ setup_directories() {
     mkdir -p "/opt/letzgo/config"
     mkdir -p "/opt/letzgo/schemas"
     
-    log_success "Directories created successfully"
+    # Set proper permissions for container access (non-root user 1001:1001)
+    log_info "Setting container permissions for logs and uploads..."
+    chown -R 1001:1001 "/opt/letzgo/logs" "/opt/letzgo/uploads" 2>/dev/null || true
+    chmod -R 755 "/opt/letzgo/logs" "/opt/letzgo/uploads" 2>/dev/null || true
+    
+    log_success "Directories created successfully with proper container permissions"
 }
 
 # --- Setup environment file ---
