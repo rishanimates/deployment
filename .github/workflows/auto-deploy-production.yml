@@ -69,17 +69,48 @@ jobs:
           token: ${{ secrets.DEPLOYMENT_TOKEN }}
           path: service-code
 
+      - name: Detect package manager
+        id: detect-pm
+        run: |
+          cd service-code
+          
+          if [ -f "yarn.lock" ]; then
+            echo "pm=yarn" >> $GITHUB_OUTPUT
+            echo "cache=yarn" >> $GITHUB_OUTPUT
+            echo "cache-path=service-code/yarn.lock" >> $GITHUB_OUTPUT
+            echo "install-cmd=yarn install --frozen-lockfile" >> $GITHUB_OUTPUT
+          elif [ -f "package-lock.json" ]; then
+            echo "pm=npm" >> $GITHUB_OUTPUT
+            echo "cache=npm" >> $GITHUB_OUTPUT
+            echo "cache-path=service-code/package-lock.json" >> $GITHUB_OUTPUT
+            echo "install-cmd=npm ci" >> $GITHUB_OUTPUT
+          else
+            echo "pm=npm" >> $GITHUB_OUTPUT
+            echo "cache=" >> $GITHUB_OUTPUT
+            echo "cache-path=" >> $GITHUB_OUTPUT
+            echo "install-cmd=npm install" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "Detected package manager: $(cat $GITHUB_OUTPUT | grep pm=)"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: service-code/package-lock.json
+          cache: ${{ steps.detect-pm.outputs.cache }}
+          cache-dependency-path: ${{ steps.detect-pm.outputs.cache-path }}
+        if: steps.detect-pm.outputs.cache != ''
+
+      - name: Setup Node.js (no cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+        if: steps.detect-pm.outputs.cache == ''
 
       - name: Install dependencies
         run: |
           cd service-code
-          npm ci
+          ${{ steps.detect-pm.outputs.install-cmd }}
 
       - name: Run tests (production)
         run: |
