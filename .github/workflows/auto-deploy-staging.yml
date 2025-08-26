@@ -268,13 +268,34 @@ jobs:
             exit 1
           }
           
-          # Ensure Docker network exists
-          if ! docker network ls | grep -q letzgo-network; then
+          # Ensure Docker network exists (robust check)
+          echo "🔍 Checking Docker network status..."
+          NETWORK_EXISTS=$(docker network ls --format "{{.Name}}" | grep "^letzgo-network$" | wc -l)
+          
+          if [ "$NETWORK_EXISTS" -eq 0 ]; then
             echo "🔗 Creating letzgo-network..."
             docker network create letzgo-network
+            
+            # Verify network was created
+            if docker network inspect letzgo-network >/dev/null 2>&1; then
+              echo "✅ letzgo-network created successfully"
+            else
+              echo "❌ Failed to create letzgo-network"
+              exit 1
+            fi
           else
             echo "✅ letzgo-network already exists"
           fi
+          
+          # Double-check network exists before proceeding
+          if ! docker network inspect letzgo-network >/dev/null 2>&1; then
+            echo "❌ Error: letzgo-network not accessible"
+            echo "📋 Available networks:"
+            docker network ls
+            exit 1
+          fi
+          
+          echo "🔗 Network verification complete"
           
           # Stop existing container if running
           docker stop letzgo-\$SERVICE_NAME || true
