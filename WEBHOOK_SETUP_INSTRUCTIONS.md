@@ -8,10 +8,13 @@
 2. Click "Generate new token (classic)"
 3. Set expiration to "No expiration" or desired period
 4. Select these scopes:
-   - ✅ **repo** (Full control of private repositories)
+   - ✅ **repo** (Full control of private repositories) - **REQUIRED for private repos**
    - ✅ **workflow** (Update GitHub Action workflows)
+   - ✅ **read:org** (Read organization membership) - **REQUIRED for private repos**
 5. Click "Generate token"
 6. **Copy the token** (you won't see it again)
+
+**⚠️ IMPORTANT:** Since your service repositories are **private**, the Personal Access Token MUST have `repo` permissions to access them.
 
 ### 2. Add Token to Each Service Repository
 

@@ -111,7 +111,7 @@ jobs:
         with:
           repository: ${{ matrix.repo }}
           ref: ${{ matrix.branch }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.DEPLOYMENT_TOKEN }}
           path: ${{ matrix.service }}
 
       - name: Setup Node.js
