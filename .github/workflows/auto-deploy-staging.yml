@@ -235,13 +235,13 @@ jobs:
       - name: Deploy service on VPS
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s -- "${{ steps.parse.outputs.service_name }}" << 'EOF'
           
           set -e
           
-          SERVICE_NAME="${{ steps.parse.outputs.service_name }}"
+          SERVICE_NAME="$1"
           
-          echo "🚀 Deploying \$SERVICE_NAME to staging from develop branch..."
+          echo "🚀 Deploying $SERVICE_NAME to staging from develop branch..."
           
           # Verify compressed tar file exists and is valid
           if [ ! -f "/tmp/service-image.tar.gz" ]; then
@@ -313,8 +313,10 @@ jobs:
             "event-service") PORT=3003 ;;
             "shared-service") PORT=3004 ;;
             "splitz-service") PORT=3005 ;;
-            *) echo "Unknown service: \$SERVICE_NAME"; exit 1 ;;
+            *) echo "Unknown service: $SERVICE_NAME"; exit 1 ;;
           esac
+          
+          echo "SERVICE_NAME=$SERVICE_NAME PORT=$PORT NETWORK_NAME=$NETWORK_NAME"
           
           # Run new container
           docker run -d \
@@ -342,11 +344,11 @@ jobs:
       - name: Wait for service to be healthy
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s -- "${{ steps.parse.outputs.service_name }}" << 'EOF'
           
-          SERVICE_NAME="${{ steps.parse.outputs.service_name }}"
+          SERVICE_NAME="$1"
           
-          case "\$SERVICE_NAME" in
+          case "$SERVICE_NAME" in
             "auth-service") PORT=3000 ;;
             "user-service") PORT=3001 ;;
             "chat-service") PORT=3002 ;;

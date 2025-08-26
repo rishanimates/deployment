@@ -297,33 +297,36 @@ jobs:
       - name: Deploy ${{ matrix.service }} on VPS
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s -- "${{ matrix.service }}" "${{ matrix.repo }}" << 'EOF'
           
           set -e
           
-          echo "🚀 Deploying ${{ matrix.service }} from repository ${{ matrix.repo }}..."
+          SERVICE_NAME="$1"
+          REPO_NAME="$2"
+          
+          echo "🚀 Deploying $SERVICE_NAME from repository $REPO_NAME..."
           
           # Verify compressed tar file exists and is valid
-          if [ ! -f "/tmp/letzgo-${{ matrix.service }}-image.tar.gz" ]; then
-            echo "❌ Error: /tmp/letzgo-${{ matrix.service }}-image.tar.gz not found on VPS"
+          if [ ! -f "/tmp/letzgo-$SERVICE_NAME-image.tar.gz" ]; then
+            echo "❌ Error: /tmp/letzgo-$SERVICE_NAME-image.tar.gz not found on VPS"
             exit 1
           fi
           
           echo "📊 Archive info:"
-          ls -lh /tmp/letzgo-${{ matrix.service }}-image.tar.gz
+          ls -lh /tmp/letzgo-$SERVICE_NAME-image.tar.gz
           
           # Test archive integrity
-          if ! gzip -t /tmp/letzgo-${{ matrix.service }}-image.tar.gz; then
+          if ! gzip -t /tmp/letzgo-$SERVICE_NAME-image.tar.gz; then
             echo "❌ Error: Archive is corrupted"
             exit 1
           fi
           
           # Load Docker image from compressed archive
           echo "📦 Loading Docker image from compressed archive..."
-          gunzip -c /tmp/letzgo-${{ matrix.service }}-image.tar.gz | docker load
+          gunzip -c /tmp/letzgo-$SERVICE_NAME-image.tar.gz | docker load
           
           # Verify image was loaded
-          docker images | grep letzgo-${{ matrix.service }} || {
+          docker images | grep letzgo-$SERVICE_NAME || {
             echo "❌ Error: Docker image not found after loading"
             exit 1
           }
@@ -351,8 +354,8 @@ jobs:
           echo "🔗 Using network: $NETWORK_NAME"
           
           # Stop existing container if running
-          docker stop letzgo-${{ matrix.service }} || true
-          docker rm letzgo-${{ matrix.service }} || true
+          docker stop letzgo-$SERVICE_NAME || true
+          docker rm letzgo-$SERVICE_NAME || true
           
           # Load environment variables
           cd "${{ env.DEPLOY_PATH }}"
@@ -366,19 +369,21 @@ jobs:
           fi
           
           # Determine service port
-          case "${{ matrix.service }}" in
+          case "$SERVICE_NAME" in
             "auth-service") PORT=3000 ;;
             "user-service") PORT=3001 ;;
             "chat-service") PORT=3002 ;;
             "event-service") PORT=3003 ;;
             "shared-service") PORT=3004 ;;
             "splitz-service") PORT=3005 ;;
-            *) echo "Unknown service: ${{ matrix.service }}"; exit 1 ;;
+            *) echo "Unknown service: $SERVICE_NAME"; exit 1 ;;
           esac
+          
+          echo "SERVICE_NAME=$SERVICE_NAME PORT=$PORT NETWORK_NAME=$NETWORK_NAME"
           
           # Run new container
           docker run -d \
-            --name letzgo-${{ matrix.service }} \
+            --name letzgo-$SERVICE_NAME \
             --network "$NETWORK_NAME" \
             -p $PORT:$PORT \
             --env-file .env \
@@ -387,24 +392,26 @@ jobs:
             -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
             -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
             --restart unless-stopped \
-            letzgo-${{ matrix.service }}:latest
+            letzgo-$SERVICE_NAME:latest
           
-          echo "✅ ${{ matrix.service }} deployed successfully from ${{ matrix.repo }}!"
+          echo "✅ $SERVICE_NAME deployed successfully from $REPO_NAME!"
           
           # Clean up compressed image file
-          rm -f /tmp/letzgo-${{ matrix.service }}-image.tar.gz
+          rm -f /tmp/letzgo-$SERVICE_NAME-image.tar.gz
           
           # Show running containers
           echo "📋 Running containers:"
-          docker ps | grep letzgo-${{ matrix.service }}
+          docker ps | grep letzgo-$SERVICE_NAME
           EOF
 
       - name: Wait for ${{ matrix.service }} to be healthy
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s -- "${{ matrix.service }}" << 'EOF'
           
-          case "${{ matrix.service }}" in
+          SERVICE_NAME="$1"
+          
+          case "$SERVICE_NAME" in
             "auth-service") PORT=3000 ;;
             "user-service") PORT=3001 ;;
             "chat-service") PORT=3002 ;;
@@ -413,26 +420,26 @@ jobs:
             "splitz-service") PORT=3005 ;;
           esac
           
-          echo "⏳ Waiting for ${{ matrix.service }} to be healthy on port \$PORT..."
+          echo "⏳ Waiting for $SERVICE_NAME to be healthy on port $PORT..."
           
           max_attempts=30
           attempt=1
           
-          while [ \$attempt -le \$max_attempts ]; do
-            if curl -f -s http://localhost:\$PORT/health > /dev/null 2>&1; then
-              echo "✅ ${{ matrix.service }} is healthy!"
+          while [ $attempt -le $max_attempts ]; do
+            if curl -f -s http://localhost:$PORT/health > /dev/null 2>&1; then
+              echo "✅ $SERVICE_NAME is healthy!"
               break
             fi
             
-            if [ \$attempt -eq \$max_attempts ]; then
-              echo "❌ ${{ matrix.service }} failed to become healthy"
-              docker logs letzgo-${{ matrix.service }} --tail 50
+            if [ $attempt -eq $max_attempts ]; then
+              echo "❌ $SERVICE_NAME failed to become healthy"
+              docker logs letzgo-$SERVICE_NAME --tail 50
               exit 1
             fi
             
-            echo "Attempt \$attempt/\$max_attempts - waiting 10 seconds..."
+            echo "Attempt $attempt/$max_attempts - waiting 10 seconds..."
             sleep 10
-            attempt=\$((attempt + 1))
+            attempt=$((attempt + 1))
           done
           EOF
 
