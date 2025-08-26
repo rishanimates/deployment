@@ -115,8 +115,31 @@ API_DOMAIN=103.168.19.241
 # --- Database Connection URLs ---
 POSTGRES_URL=postgresql://postgres:$POSTGRES_PASSWORD@letzgo-postgres:5432/letzgo_db
 MONGODB_URL=mongodb://admin:$MONGODB_PASSWORD@letzgo-mongodb:27017/letzgo_db?authSource=admin
+MONGODB_URI=mongodb://admin:$MONGODB_PASSWORD@letzgo-mongodb:27017/letzgo_db?authSource=admin
 REDIS_URL=redis://:$REDIS_PASSWORD@letzgo-redis:6379
 RABBITMQ_URL=amqp://admin:$RABBITMQ_PASSWORD@letzgo-rabbitmq:5672
+
+# --- Individual Database Connection Parameters ---
+# MongoDB
+MONGODB_HOST=letzgo-mongodb
+MONGODB_PORT=27017
+MONGODB_DATABASE=letzgo_db
+MONGODB_USERNAME=admin
+
+# Redis  
+REDIS_HOST=letzgo-redis
+REDIS_PORT=6379
+
+# PostgreSQL
+POSTGRES_HOST=letzgo-postgres
+POSTGRES_PORT=5432
+POSTGRES_DATABASE=letzgo_db
+POSTGRES_USERNAME=postgres
+
+# RabbitMQ
+RABBITMQ_HOST=letzgo-rabbitmq
+RABBITMQ_PORT=5672
+RABBITMQ_USERNAME=admin
 
 # --- Service Ports ---
 AUTH_SERVICE_PORT=3000
