@@ -297,7 +297,7 @@ jobs:
       - name: Deploy ${{ matrix.service }} on VPS
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           
           set -e
           
@@ -402,7 +402,7 @@ jobs:
       - name: Wait for ${{ matrix.service }} to be healthy
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           
           case "${{ matrix.service }}" in
             "auth-service") PORT=3000 ;;

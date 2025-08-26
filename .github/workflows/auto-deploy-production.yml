@@ -230,7 +230,7 @@ jobs:
       - name: Deploy service on Production VPS
         run: |
           ssh -p ${{ secrets.PROD_VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }} << EOF
+            ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }} << 'EOF'
           
           set -e
           
@@ -345,7 +345,7 @@ jobs:
       - name: Wait for service to be healthy (Production)
         run: |
           ssh -p ${{ secrets.PROD_VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }} << EOF
+            ${{ secrets.PROD_VPS_USER }}@${{ secrets.PROD_VPS_HOST }} << 'EOF'
           
           SERVICE_NAME="${{ steps.parse.outputs.service_name }}"
           
