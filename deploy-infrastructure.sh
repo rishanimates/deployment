@@ -141,6 +141,9 @@ RABBITMQ_HOST=letzgo-rabbitmq
 RABBITMQ_PORT=5672
 RABBITMQ_USERNAME=admin
 
+# --- Database Schema Configuration ---
+DB_SCHEMA=public
+
 # --- Service Ports ---
 AUTH_SERVICE_PORT=3000
 USER_SERVICE_PORT=3001
