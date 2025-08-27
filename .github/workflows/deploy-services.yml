@@ -4,10 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: 'Services to deploy (comma-separated or "all")'
+        description: 'Services to deploy: auth-service,user-service,chat-service,event-service,shared-service,splitz-service or "all"'
         required: false
         default: 'all'
         type: string
+      branch:
+        description: 'Branch to deploy from'
+        required: false
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - develop
+          - staging
       force_rebuild:
         description: 'Force rebuild Docker images'
         required: false
@@ -23,6 +32,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Setup SSH
         run: |
@@ -40,14 +51,14 @@ jobs:
       - name: Copy services script
         run: |
           scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            deployment/deploy-services.sh \
+            deploy-services.sh \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
 
       - name: Execute services deployment
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "chmod +x /tmp/deploy-services.sh && /tmp/deploy-services.sh '${{ github.event.inputs.services }}' ${{ github.event.inputs.force_rebuild && '--force-rebuild' || '' }}"
+            "chmod +x /tmp/deploy-services.sh && /tmp/deploy-services.sh '${{ github.event.inputs.services }}' '${{ github.event.inputs.branch }}' ${{ github.event.inputs.force_rebuild && '--force-rebuild' || '' }}"
 
       - name: Cleanup SSH
         if: always()

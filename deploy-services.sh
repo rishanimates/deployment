@@ -2,7 +2,14 @@
 
 # LetzGo Services Deployment Script
 # This script deploys all application services with proper networking and database connectivity
-# Usage: ./deploy-services.sh [service1,service2,...] [--force-rebuild]
+# 
+# Available Services: auth-service, user-service, chat-service, event-service, shared-service, splitz-service
+# 
+# Usage: 
+#   ./deploy-services.sh [services] [branch] [--force-rebuild]
+#   ./deploy-services.sh all main
+#   ./deploy-services.sh auth-service,user-service develop
+#   ./deploy-services.sh splitz-service main --force-rebuild
 
 set -e
 
@@ -10,8 +17,18 @@ set -e
 DEPLOY_PATH="/opt/letzgo"
 ENV_FILE="$DEPLOY_PATH/.env"
 NETWORK_NAME="letzgo-network"
+GITHUB_USER="rhushirajpatil"
 
-# Available services
+# Available services with repository URLs
+declare -A SERVICE_REPOS=(
+    ["auth-service"]="git@github.com:$GITHUB_USER/auth-service.git"
+    ["user-service"]="git@github.com:$GITHUB_USER/user-service.git"
+    ["chat-service"]="git@github.com:$GITHUB_USER/chat-service.git"
+    ["event-service"]="git@github.com:$GITHUB_USER/event-service.git"
+    ["shared-service"]="git@github.com:$GITHUB_USER/shared-service.git"
+    ["splitz-service"]="git@github.com:$GITHUB_USER/splitz-service.git"
+)
+
 AVAILABLE_SERVICES=("auth-service" "user-service" "chat-service" "event-service" "shared-service" "splitz-service")
 
 # Color codes
@@ -90,15 +107,81 @@ get_service_port() {
     esac
 }
 
-# Create service Dockerfile if not exists
-create_service_dockerfile() {
+# Clone or update service repository
+clone_service_repo() {
     local service="$1"
-    local dockerfile_path="$DEPLOY_PATH/Dockerfile.$service"
+    local branch="$2"
+    local service_dir="$DEPLOY_PATH/services/$service"
+    local repo_url="${SERVICE_REPOS[$service]}"
     
-    if [ ! -f "$dockerfile_path" ]; then
-        log_info "Creating Dockerfile for $service..."
+    if [ -z "$repo_url" ]; then
+        log_error "No repository URL configured for $service"
+        return 1
+    fi
+    
+    log_info "📥 Cloning $service from $branch branch..."
+    
+    # Create services directory
+    mkdir -p "$DEPLOY_PATH/services"
+    
+    # Remove existing directory if it exists
+    if [ -d "$service_dir" ]; then
+        log_info "Removing existing $service directory..."
+        rm -rf "$service_dir"
+    fi
+    
+    # Clone repository
+    if git clone -b "$branch" "$repo_url" "$service_dir" >/dev/null 2>&1; then
+        log_success "✅ $service repository cloned successfully"
         
-        cat > "$dockerfile_path" << EOF
+        # Show commit info
+        cd "$service_dir"
+        local commit_hash=$(git rev-parse --short HEAD)
+        local commit_message=$(git log -1 --pretty=format:"%s")
+        log_info "Commit: $commit_hash - $commit_message"
+        
+        return 0
+    else
+        log_error "❌ Failed to clone $service repository"
+        log_info "Trying HTTPS URL as fallback..."
+        
+        # Try HTTPS as fallback
+        local https_url=$(echo "$repo_url" | sed 's/git@github.com:/https:\/\/github.com\//')
+        if git clone -b "$branch" "$https_url" "$service_dir" >/dev/null 2>&1; then
+            log_success "✅ $service repository cloned via HTTPS"
+            return 0
+        else
+            log_error "❌ Failed to clone $service repository via HTTPS"
+            return 1
+        fi
+    fi
+}
+
+
+
+# Build service image
+build_service_image() {
+    local service="$1"
+    local branch="$2"
+    local image_name="letzgo-$service:latest"
+    local service_dir="$DEPLOY_PATH/services/$service"
+    
+    log_info "Building Docker image for $service..."
+    
+    # Check if service directory exists
+    if [ ! -d "$service_dir" ]; then
+        log_error "Service directory not found: $service_dir"
+        return 1
+    fi
+    
+    cd "$service_dir"
+    
+    # Check if Dockerfile exists in the service repo
+    if [ -f "Dockerfile" ]; then
+        log_info "Using Dockerfile from $service repository"
+    else
+        log_info "Creating default Dockerfile for $service"
+        cat > "Dockerfile" << 'EOF'
 FROM node:20-alpine
 
 WORKDIR /app
@@ -117,8 +200,8 @@ RUN yarn install --frozen-lockfile --production
 COPY . .
 
 # Create logs and uploads directories
-RUN mkdir -p logs uploads && \\
-    chown -R node:node logs uploads && \\
+RUN mkdir -p logs uploads && \
+    chown -R node:node logs uploads && \
     chmod 755 logs uploads
 
 # Switch to non-root user
@@ -128,31 +211,18 @@ USER node
 EXPOSE 3000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \\
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:3000/health || exit 1
 
 # Start application
 CMD ["yarn", "start"]
 EOF
-        
-        log_success "Dockerfile created for $service"
     fi
-}
-
-# Build service image
-build_service_image() {
-    local service="$1"
-    local image_name="letzgo-$service:latest"
     
-    log_info "Building Docker image for $service..."
-    
-    # Create a temporary directory with service files
-    local temp_dir="/tmp/letzgo-$service-build"
-    mkdir -p "$temp_dir"
-    
-    # Create package.json if not exists
-    if [ ! -f "$temp_dir/package.json" ]; then
-        cat > "$temp_dir/package.json" << EOF
+    # Check if package.json exists
+    if [ ! -f "package.json" ]; then
+        log_warning "No package.json found, creating basic one"
+        cat > "package.json" << EOF
 {
   "name": "$service",
   "version": "1.0.0",
@@ -184,10 +254,15 @@ build_service_image() {
 EOF
     fi
     
-    # Create basic app structure
-    mkdir -p "$temp_dir/src"
-    if [ ! -f "$temp_dir/src/app.js" ]; then
-        cat > "$temp_dir/src/app.js" << EOF
+    # Create basic app structure if needed
+    if [ ! -d "src" ]; then
+        log_info "Creating basic app structure for $service"
+        mkdir -p src
+    fi
+    
+    if [ ! -f "src/app.js" ]; then
+        log_info "Creating basic app.js for $service"
+        cat > "src/app.js" << EOF
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -260,17 +335,17 @@ process.on('SIGINT', () => {
 EOF
     fi
     
-    # Copy Dockerfile
-    cp "$DEPLOY_PATH/Dockerfile.$service" "$temp_dir/Dockerfile"
-    
-    # Build image
-    cd "$temp_dir"
+    # Build Docker image from service directory
+    log_info "Building image: $image_name"
     docker build -t "$image_name" .
     
-    # Cleanup
-    rm -rf "$temp_dir"
-    
-    log_success "Docker image built: $image_name"
+    if [ $? -eq 0 ]; then
+        log_success "Docker image built: $image_name"
+        return 0
+    else
+        log_error "Failed to build Docker image for $service"
+        return 1
+    fi
 }
 
 # Deploy service
@@ -369,16 +444,18 @@ wait_for_service_health() {
 
 # Deploy all services
 deploy_services() {
+    local branch="$1"
+    shift
     local services_to_deploy=("$@")
     local successful_deployments=0
     local failed_deployments=0
     
     for service in "${services_to_deploy[@]}"; do
         echo ""
-        log_step "Deploying $service..."
+        log_step "Deploying $service from $branch branch..."
         
-        if create_service_dockerfile "$service" && \\
-           build_service_image "$service" && \\
+        if clone_service_repo "$service" "$branch" && \\
+           build_service_image "$service" "$branch" && \\
            deploy_service "$service" && \\
            wait_for_service_health "$service"; then
             successful_deployments=$((successful_deployments + 1))
@@ -442,18 +519,22 @@ parse_services() {
 # Main execution
 main() {
     local services_to_deploy=""
+    local branch="main"
     local force_rebuild=false
     
     # Parse arguments
+    local arg_count=0
     for arg in "$@"; do
         case $arg in
             --force-rebuild)
                 force_rebuild=true
                 ;;
             *)
-                if [ -z "$services_to_deploy" ]; then
-                    services_to_deploy="$arg"
-                fi
+                arg_count=$((arg_count + 1))
+                case $arg_count in
+                    1) services_to_deploy="$arg" ;;
+                    2) branch="$arg" ;;
+                esac
                 ;;
         esac
     done
@@ -468,6 +549,7 @@ main() {
     print_banner
     
     echo "🎯 Services to deploy: ${services_array[*]}"
+    echo "🌿 Branch: $branch"
     echo ""
     
     if ! check_prerequisites; then
@@ -479,7 +561,7 @@ main() {
         log_warning "Force rebuild requested - will rebuild all Docker images"
     fi
     
-    deploy_services "${services_array[@]}"
+    deploy_services "$branch" "${services_array[@]}"
     display_status
     
     echo ""

@@ -27,14 +27,17 @@ This deployment system consists of two main scripts:
 
 ### 2. Deploy Services
 ```bash
-# Deploy all services
-./deploy-services.sh
+# Deploy all services from main branch
+./deploy-services.sh all main
 
-# Deploy specific services
-./deploy-services.sh auth-service,user-service
+# Deploy specific services from develop branch
+./deploy-services.sh auth-service,user-service develop
 
-# Force rebuild Docker images
-./deploy-services.sh --force-rebuild
+# Deploy single service with force rebuild
+./deploy-services.sh splitz-service main --force-rebuild
+
+# Deploy all services from staging branch
+./deploy-services.sh all staging
 ```
 
 ## 📊 Infrastructure Components
@@ -60,14 +63,22 @@ This deployment system consists of two main scripts:
 
 ## 🎯 Application Services
 
-| Service | Port | Description |
-|---------|------|-------------|
-| auth-service | 3000 | Authentication & authorization |
-| user-service | 3001 | User management |
-| chat-service | 3002 | Real-time messaging |
-| event-service | 3003 | Event management |
-| shared-service | 3004 | Shared utilities |
-| splitz-service | 3005 | Expense splitting |
+### Service Architecture
+Services are deployed from **separate GitHub repositories** with **branch-based deployment**.
+
+| Service | Port | Repository | Description |
+|---------|------|------------|-------------|
+| auth-service | 3000 | `rhushirajpatil/auth-service` | Authentication & authorization |
+| user-service | 3001 | `rhushirajpatil/user-service` | User management |
+| chat-service | 3002 | `rhushirajpatil/chat-service` | Real-time messaging |
+| event-service | 3003 | `rhushirajpatil/event-service` | Event management |
+| shared-service | 3004 | `rhushirajpatil/shared-service` | Shared utilities |
+| splitz-service | 3005 | `rhushirajpatil/splitz-service` | Expense splitting |
+
+### Branch Strategy
+- **`main`** - Production-ready code
+- **`develop`** - Development branch  
+- **`staging`** - Staging environment testing
 
 ## 🔧 Configuration
 
@@ -139,8 +150,10 @@ curl http://localhost:3002/health  # chat-service
 ### Services Deployment  
 **Workflow**: `Deploy Services`
 - Triggers: Manual dispatch
-- Options: Select services, force rebuild
-- Deploys: Application microservices
+- Services: `auth-service,user-service,chat-service,event-service,shared-service,splitz-service` or `all`
+- Branches: `main`, `develop`, `staging`
+- Options: Force rebuild Docker images
+- Deploys: Application microservices from separate repositories
 
 ## 🛠️ Troubleshooting
 
