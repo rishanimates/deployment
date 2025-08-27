@@ -19,31 +19,180 @@ jobs:
       - name: Checkout deployment repo
         uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - name: Debug SSH Configuration
         run: |
+          echo "🔍 Debugging SSH configuration for infrastructure deployment..."
+          echo "VPS_HOST: ${{ secrets.VPS_HOST }}"
+          echo "VPS_PORT: ${{ secrets.VPS_PORT }}"
+          echo "VPS_USER: ${{ secrets.VPS_USER }}"
+          echo "SSH Key provided: ${{ secrets.VPS_SSH_KEY != '' }}"
+          echo "SSH Key length: ${#VPS_SSH_KEY}"
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+
+      - name: Setup SSH with validation
+        run: |
+          echo "🔧 Setting up SSH connection with validation..."
           mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+          
+          # Check if SSH key is provided
+          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
+            echo "❌ VPS_SSH_KEY secret is empty or not set"
+            echo "Please ensure the SSH private key is properly configured in GitHub Secrets"
+            exit 1
+          fi
+          
+          # Create SSH key file with proper format handling
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa_temp
+          
+          # Clean up potential Windows line endings and formatting issues
+          tr -d '\r' < ~/.ssh/id_rsa_temp > ~/.ssh/id_rsa
+          rm ~/.ssh/id_rsa_temp
+          
+          # Set proper permissions
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          
+          # Validate SSH key format
+          echo "🔍 Validating SSH key format..."
+          if ssh-keygen -l -f ~/.ssh/id_rsa 2>/dev/null; then
+            echo "✅ SSH key format is valid"
+          else
+            echo "❌ SSH key format is invalid"
+            echo "Key file contents (first/last lines):"
+            head -1 ~/.ssh/id_rsa
+            tail -1 ~/.ssh/id_rsa
+            echo "Key file size: $(wc -c < ~/.ssh/id_rsa) bytes"
+            exit 1
+          fi
+          
+          # Test SSH key loading
+          echo "🔍 Testing SSH key loading..."
+          if ssh-add -l 2>/dev/null; then
+            echo "SSH agent is available"
+          fi
+          
+          # Add host to known_hosts with error handling
+          echo "🔍 Adding VPS host to known_hosts..."
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || {
+            echo "⚠️ ssh-keyscan failed, adding host manually..."
+            echo "[${{ secrets.VPS_HOST }}]:${{ secrets.VPS_PORT }} ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC..." >> ~/.ssh/known_hosts
+          }
+          
+          chmod 644 ~/.ssh/known_hosts
 
-      - name: Test SSH connection
+      - name: Test SSH connection with detailed output
         run: |
-          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+          echo "🔍 Testing SSH connection with detailed diagnostics..."
+          
+          # Test connection with verbose output
+          ssh -v -p ${{ secrets.VPS_PORT }} -o ConnectTimeout=30 -o StrictHostKeyChecking=no \
+            -o PasswordAuthentication=no -o PubkeyAuthentication=yes \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "echo '✅ SSH connection successful' && whoami && date"
+            "echo '✅ SSH connection successful for infrastructure deployment' && whoami && date && uname -a" 2>&1 || {
+            
+            echo "❌ SSH connection failed"
+            echo ""
+            echo "🔍 Diagnostics:"
+            echo "SSH key file permissions:"
+            ls -la ~/.ssh/
+            echo ""
+            echo "SSH key fingerprint:"
+            ssh-keygen -l -f ~/.ssh/id_rsa 2>/dev/null || echo "Could not read key fingerprint"
+            echo ""
+            echo "Testing basic connectivity:"
+            nc -zv ${{ secrets.VPS_HOST }} ${{ secrets.VPS_PORT }} 2>&1 || echo "Port connectivity test failed"
+            echo ""
+            echo "Please check:"
+            echo "1. SSH key format in GitHub Secrets (complete key with headers/footers)"
+            echo "2. SSH key corresponds to a key added to VPS authorized_keys"
+            echo "3. VPS SSH service is running on port ${{ secrets.VPS_PORT }}"
+            echo "4. Firewall allows connections on port ${{ secrets.VPS_PORT }}"
+            
+            exit 1
+          }
 
-      - name: Copy infrastructure script
+      - name: Copy infrastructure script to VPS
         run: |
-          scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+          echo "📦 Copying infrastructure deployment script to VPS..."
+          
+          # Copy script with error handling
+          scp -v -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             deploy-infrastructure.sh \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/ || {
+            echo "❌ Failed to copy infrastructure script to VPS"
+            echo "This usually indicates SSH/SCP permission issues"
+            exit 1
+          }
+          
+          echo "✅ Infrastructure script copied successfully"
 
       - name: Execute infrastructure deployment
         run: |
+          echo "🚀 Executing infrastructure deployment on VPS..."
+          
+          # Execute deployment with comprehensive error handling
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "chmod +x /tmp/deploy-infrastructure.sh && /tmp/deploy-infrastructure.sh ${{ github.event.inputs.force_rebuild && '--force-rebuild' || '' }}"
+            "chmod +x /tmp/deploy-infrastructure.sh && /tmp/deploy-infrastructure.sh ${{ github.event.inputs.force_rebuild && '--force-rebuild' || '' }}" || {
+            
+            echo "❌ Infrastructure deployment failed"
+            echo ""
+            echo "🔍 Checking deployment environment on VPS..."
+            ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+              ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+              "echo 'Checking VPS environment:' && \
+               echo 'Current user:' && whoami && \
+               echo 'Docker status:' && docker --version 2>/dev/null || echo 'Docker not available' && \
+               echo 'Docker Compose status:' && docker-compose --version 2>/dev/null || echo 'Docker Compose not available' && \
+               echo 'Available space:' && df -h / && \
+               echo 'Script permissions:' && ls -la /tmp/deploy-infrastructure.sh 2>/dev/null || echo 'Script not found'" || echo "Could not run diagnostics"
+            
+            exit 1
+          }
+
+      - name: Verify infrastructure deployment
+        run: |
+          echo "🔍 Verifying infrastructure deployment..."
+          
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "echo '📋 Infrastructure Verification:' && \
+             echo 'Environment file:' && \
+             ls -la /opt/letzgo/.env.staging 2>/dev/null && echo 'Environment file exists ✅' || echo 'Environment file missing ❌' && \
+             echo 'Docker containers:' && \
+             docker ps --format 'table {{.Names}}\t{{.Status}}' | grep letzgo || echo 'No LetzGo containers running' && \
+             echo 'Docker network:' && \
+             docker network ls | grep letzgo-network && echo 'Network exists ✅' || echo 'Network missing ❌'" || {
+            
+            echo "❌ Infrastructure verification failed"
+            exit 1
+          }
+          
+          echo "✅ Infrastructure deployment verified successfully"
+
+      - name: Display deployment summary
+        if: always()
+        run: |
+          echo ""
+          echo "🎯 Infrastructure Deployment Summary"
+          echo "===================================="
+          echo ""
+          echo "✅ Infrastructure deployment completed"
+          echo "📁 Environment file: /opt/letzgo/.env.staging"
+          echo "🐳 Docker containers: PostgreSQL, MongoDB, Redis, RabbitMQ"
+          echo "🌐 Network: letzgo-network"
+          echo ""
+          echo "🔗 Service URLs:"
+          echo "PostgreSQL: postgresql://postgres:***@103.168.19.241:5432/letzgo"
+          echo "MongoDB: mongodb://admin:***@103.168.19.241:27017/letzgo"
+          echo "Redis: redis://:***@103.168.19.241:6379"
+          echo "RabbitMQ: http://103.168.19.241:15672"
+          echo ""
+          echo "⏭️  Next Step: Deploy services using individual service workflows"
 
       - name: Cleanup SSH
         if: always()
-        run: rm -f ~/.ssh/id_rsa
+        run: |
+          rm -f ~/.ssh/id_rsa
+          echo "🧹 SSH cleanup completed"
