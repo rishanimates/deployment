@@ -294,210 +294,34 @@ jobs:
           
           echo "✅ Docker image transferred successfully"
 
-      - name: Deploy ${{ matrix.service }} on VPS
+      - name: Copy deployment scripts to VPS
         run: |
+          echo "📤 Copying deployment scripts to VPS..."
+          
+          # Create scripts directory on VPS
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s -- "${{ matrix.service }}" "${{ matrix.repo }}" << 'EOF'
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "mkdir -p ${{ env.DEPLOY_PATH }}/scripts"
           
-          set -e
+          # Copy deployment scripts
+          scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            scripts/deploy-service-with-fixes.sh \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ env.DEPLOY_PATH }}/scripts/
           
-          SERVICE_NAME="$1"
-          REPO_NAME="$2"
+          # Make scripts executable
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "chmod +x ${{ env.DEPLOY_PATH }}/scripts/*.sh"
           
-          echo "🚀 Deploying $SERVICE_NAME from repository $REPO_NAME..."
-          
-          # Verify compressed tar file exists and is valid
-          if [ ! -f "/tmp/letzgo-$SERVICE_NAME-image.tar.gz" ]; then
-            echo "❌ Error: /tmp/letzgo-$SERVICE_NAME-image.tar.gz not found on VPS"
-            exit 1
-          fi
-          
-          echo "📊 Archive info:"
-          ls -lh /tmp/letzgo-$SERVICE_NAME-image.tar.gz
-          
-          # Test archive integrity
-          if ! gzip -t /tmp/letzgo-$SERVICE_NAME-image.tar.gz; then
-            echo "❌ Error: Archive is corrupted"
-            exit 1
-          fi
-          
-          # Load Docker image from compressed archive
-          echo "📦 Loading Docker image from compressed archive..."
-          gunzip -c /tmp/letzgo-$SERVICE_NAME-image.tar.gz | docker load
-          
-          # Verify image was loaded
-          docker images | grep letzgo-$SERVICE_NAME || {
-            echo "❌ Error: Docker image not found after loading"
-            exit 1
-          }
-          
-          # Ensure Docker network exists (use same network as infrastructure)
-          echo "🔍 Checking Docker network status..."
-          NETWORK_NAME="letzgo-network"
-          
-          # Always use letzgo-network (same as infrastructure)
-          if ! docker network ls --format "{{.Name}}" | grep -q "^letzgo-network$"; then
-            echo "🔗 Creating letzgo-network..."
-            docker network create letzgo-network
-          fi
-          
-          echo "🔍 Infrastructure containers network:"
-          docker ps --format "table {{.Names}}\t{{.Networks}}" | grep -E "(postgres|mongodb|redis|rabbitmq)" || echo "No infrastructure containers found"
-          
-          # Verify chosen network is accessible
-          if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
-            echo "❌ Error: network '$NETWORK_NAME' not accessible"
-            echo "📋 Available networks:"
-            docker network ls
-            exit 1
-          fi
-          echo "🔗 Using network: $NETWORK_NAME"
-          
-          # Stop existing container if running
-          docker stop letzgo-$SERVICE_NAME || true
-          docker rm letzgo-$SERVICE_NAME || true
-          
-          # Ensure proper permissions for container volumes (non-root user 1001:1001)
-          echo "🔧 Setting container permissions for logs and uploads..."
-          chown -R 1001:1001 logs/ uploads/ 2>/dev/null || true
-          chmod -R 755 logs/ uploads/ 2>/dev/null || true
-          
-          # Determine service port
-          case "$SERVICE_NAME" in
-            "auth-service") PORT=3000 ;;
-            "user-service") PORT=3001 ;;
-            "chat-service") PORT=3002 ;;
-            "event-service") PORT=3003 ;;
-            "shared-service") PORT=3004 ;;
-            "splitz-service") PORT=3005 ;;
-            *) echo "Unknown service: $SERVICE_NAME"; exit 1 ;;
-          esac
-          
-          echo "SERVICE_NAME=$SERVICE_NAME PORT=$PORT NETWORK_NAME=$NETWORK_NAME"
-          
-          # Load environment variables and fix database URLs
-          cd "${{ env.DEPLOY_PATH }}"
-          if [ -f ".env" ]; then
-            set -a
-            source .env
-            set +a
-          else
-            echo "❌ Environment file not found!"
-            exit 1
-          fi
-          
-          # Override database connection URLs with correct hostnames
-          POSTGRES_URL="postgresql://postgres:${POSTGRES_PASSWORD}@letzgo-postgres:5432/letzgo?sslmode=disable"
-          MONGODB_URL="mongodb://admin:${MONGODB_PASSWORD}@letzgo-mongodb:27017/letzgo?authSource=admin"
-          MONGODB_URI="mongodb://admin:${MONGODB_PASSWORD}@letzgo-mongodb:27017/letzgo?authSource=admin"
-          REDIS_URL="redis://:${REDIS_PASSWORD}@letzgo-redis:6379"
-          RABBITMQ_URL="amqp://admin:${RABBITMQ_PASSWORD}@letzgo-rabbitmq:5672"
-          
-          # Run new container with corrected database URLs
-          docker run -d \
-            --name letzgo-$SERVICE_NAME \
-            --network "$NETWORK_NAME" \
-            -p $PORT:$PORT \
-            -e NODE_ENV=staging \
-            -e PORT=$PORT \
-            -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-            -e MONGODB_PASSWORD="$MONGODB_PASSWORD" \
-            -e REDIS_PASSWORD="$REDIS_PASSWORD" \
-            -e RABBITMQ_PASSWORD="$RABBITMQ_PASSWORD" \
-            -e JWT_SECRET="$JWT_SECRET" \
-            -e SERVICE_API_KEY="$SERVICE_API_KEY" \
-            -e POSTGRES_URL="$POSTGRES_URL" \
-            -e MONGODB_URL="$MONGODB_URL" \
-            -e MONGODB_URI="$MONGODB_URI" \
-            -e REDIS_URL="$REDIS_URL" \
-            -e RABBITMQ_URL="$RABBITMQ_URL" \
-            -e POSTGRES_HOST=letzgo-postgres \
-            -e MONGODB_HOST=letzgo-mongodb \
-            -e REDIS_HOST=letzgo-redis \
-            -e RABBITMQ_HOST=letzgo-rabbitmq \
-            -e POSTGRES_PORT=5432 \
-            -e MONGODB_PORT=27017 \
-            -e REDIS_PORT=6379 \
-            -e RABBITMQ_PORT=5672 \
-            -e POSTGRES_DATABASE=letzgo \
-            -e MONGODB_DATABASE=letzgo \
-            -e POSTGRES_USERNAME=postgres \
-            -e MONGODB_USERNAME=admin \
-            -e RABBITMQ_USERNAME=admin \
-            -e DB_SCHEMA=public \
-            -e DOMAIN_NAME="$DOMAIN_NAME" \
-            -e API_DOMAIN="$API_DOMAIN" \
-            -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
-            -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
-            --restart unless-stopped \
-            letzgo-$SERVICE_NAME:latest
-          
-          echo "✅ $SERVICE_NAME deployed successfully from $REPO_NAME!"
-          
-          # Clean up compressed image file
-          rm -f /tmp/letzgo-$SERVICE_NAME-image.tar.gz
-          
-          # Show running containers
-          echo "📋 Running containers:"
-          docker ps | grep letzgo-$SERVICE_NAME
-          EOF
+          echo "✅ Deployment scripts copied and made executable"
 
-      - name: Wait for ${{ matrix.service }} to be healthy
+      - name: Deploy ${{ matrix.service }} on VPS using script
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s -- "${{ matrix.service }}" << 'EOF'
-          
-          SERVICE_NAME="$1"
-          
-          case "$SERVICE_NAME" in
-            "auth-service") PORT=3000 ;;
-            "user-service") PORT=3001 ;;
-            "chat-service") PORT=3002 ;;
-            "event-service") PORT=3003 ;;
-            "shared-service") PORT=3004 ;;
-            "splitz-service") PORT=3005 ;;
-          esac
-          
-          echo "⏳ Waiting for $SERVICE_NAME to be healthy on port $PORT..."
-          
-          max_attempts=5
-          attempt=1
-          
-          while [ $attempt -le $max_attempts ]; do
-            # Check if container is running first
-            if ! docker ps | grep -q letzgo-$SERVICE_NAME; then
-              echo "⚠️ Container letzgo-$SERVICE_NAME is not running"
-              docker logs letzgo-$SERVICE_NAME --tail 20
-              echo "Attempt $attempt/$max_attempts - waiting 5 seconds..."
-              sleep 5
-              attempt=$((attempt + 1))
-              continue
-            fi
-            
-            # Test health endpoint
-            if curl -f -s http://localhost:$PORT/health > /dev/null 2>&1; then
-              echo "✅ $SERVICE_NAME is healthy!"
-              # Show successful curl output for verification
-              curl -s http://localhost:$PORT/health
-              break
-            fi
-            
-            if [ $attempt -eq $max_attempts ]; then
-              echo "❌ $SERVICE_NAME failed to become healthy after $max_attempts attempts"
-              echo "📋 Container status:"
-              docker ps | grep letzgo-$SERVICE_NAME || echo "Container not found"
-              echo "📋 Container logs (last 50 lines):"
-              docker logs letzgo-$SERVICE_NAME --tail 50
-              echo "📋 Network connectivity test:"
-              docker exec letzgo-$SERVICE_NAME wget -qO- http://localhost:$PORT/health 2>&1 || echo "Internal health check failed"
-              exit 1
-            fi
-            
-            echo "Attempt $attempt/$max_attempts - waiting 5 seconds..."
-            sleep 5
-            attempt=$((attempt + 1))
-          done
-          EOF
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "cd ${{ env.DEPLOY_PATH }} && ./scripts/deploy-service-with-fixes.sh ${{ matrix.service }} ${{ matrix.repo }} ${{ env.DEPLOY_PATH }}"
+
+
 
       - name: Cleanup SSH
         if: always()

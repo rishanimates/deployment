@@ -140,65 +140,17 @@ jobs:
             letzgo-infrastructure.tar.gz \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
 
-      - name: Deploy fresh infrastructure on VPS
+      - name: Deploy fresh infrastructure on VPS using script
         run: |
+          # Copy infrastructure deployment script
+          scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            scripts/deploy-infrastructure-via-actions.sh \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
+          
+          # Execute infrastructure deployment via script
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
-          
-          set -e
-          
-          echo "🚀 Starting fresh infrastructure deployment..."
-          echo "Environment: ${{ env.ENVIRONMENT }}"
-          echo "Force rebuild: ${{ github.event.inputs.force_rebuild }}"
-          
-          # Extract infrastructure files
-          cd /tmp
-          tar -xzf letzgo-infrastructure.tar.gz
-          
-          # Create deployment directory
-          mkdir -p "${{ env.DEPLOY_PATH }}"
-          
-          # Copy infrastructure files
-          cp -r /tmp/letzgo-infrastructure/* "${{ env.DEPLOY_PATH }}/"
-          
-          # Make scripts executable
-          chmod +x "${{ env.DEPLOY_PATH }}"/*.sh
-          
-          # Create environment file if it doesn't exist
-          if [ ! -f "${{ env.DEPLOY_PATH }}/.env" ]; then
-            echo "⚠️  Creating default environment file..."
-            cat > "${{ env.DEPLOY_PATH }}/.env" << 'ENVEOF'
-          # Generated staging environment file - PLEASE UPDATE WITH REAL VALUES
-          NODE_ENV=staging
-          POSTGRES_PASSWORD=postgres123_change_me
-          MONGODB_PASSWORD=mongodb123_change_me
-          REDIS_PASSWORD=redis123_change_me
-          RABBITMQ_PASSWORD=rabbitmq123_change_me
-          JWT_SECRET=jwt_secret_change_me_to_at_least_32_characters_long
-          SERVICE_API_KEY=service_api_key_change_me_to_at_least_32_characters_long
-          RAZORPAY_KEY_ID=your_razorpay_key_id
-          RAZORPAY_KEY_SECRET=your_razorpay_key_secret
-          STORAGE_PROVIDER=local
-          ENVEOF
-            echo "⚠️  DEFAULT ENVIRONMENT CREATED - PLEASE UPDATE WITH REAL VALUES!"
-          fi
-          
-          # Check for port conflicts and clean up
-          echo "🔍 Checking for port conflicts..."
-          netstat -tlnp | grep -E ":5432|:27017|:6379|:5672" || echo "No conflicts found"
-          
-          # Stop any existing containers that might conflict
-          docker ps -q --filter "publish=5432" | xargs -r docker stop || true
-          docker ps -q --filter "publish=27017" | xargs -r docker stop || true
-          docker ps -q --filter "publish=6379" | xargs -r docker stop || true
-          docker ps -q --filter "publish=5672" | xargs -r docker stop || true
-          
-          # Run infrastructure deployment (databases only)
-          cd "${{ env.DEPLOY_PATH }}"
-          ./deploy-infrastructure.sh
-          
-          echo "✅ Infrastructure deployment completed successfully!"
-          EOF
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "chmod +x /tmp/deploy-infrastructure-via-actions.sh && /tmp/deploy-infrastructure-via-actions.sh ${{ github.event.inputs.force_rebuild }}"
 
       - name: Verify infrastructure deployment
         run: |
