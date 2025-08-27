@@ -343,22 +343,32 @@ deploy_nginx() {
     
     cd "$DEPLOY_DIR"
     
-    # Deploy Nginx (basic configuration, services will be added later)
-    docker-compose -f docker-compose.infrastructure.yml up -d nginx
+    # Check if ports are available
+    if netstat -tlnp 2>/dev/null | grep -q ":8090 "; then
+        log_warning "⚠️ Port 8090 is already in use - skipping Nginx deployment"
+        return 1
+    fi
     
-    # Wait for Nginx to be ready
-    for i in {1..30}; do
-        if docker-compose -f docker-compose.infrastructure.yml ps nginx | grep -q "Up"; then
-            log_success "✅ Nginx is running"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            log_warning "⚠️ Nginx may not be fully ready - services not deployed yet"
-            break
-        fi
-        echo "Attempt $i/30 - Nginx not ready yet, waiting 5 seconds..."
-        sleep 5
-    done
+    # Deploy Nginx (basic configuration, services will be added later)
+    if docker-compose -f docker-compose.infrastructure.yml up -d nginx; then
+        log_info "Nginx container started, checking health..."
+        
+        # Wait for Nginx to be ready
+        for i in {1..15}; do
+            if docker-compose -f docker-compose.infrastructure.yml ps nginx | grep -q "Up"; then
+                log_success "✅ Nginx is running on port 8090"
+                return 0
+            fi
+            echo "Attempt $i/15 - Nginx not ready yet, waiting 3 seconds..."
+            sleep 3
+        done
+        
+        log_warning "⚠️ Nginx started but may not be fully ready"
+        return 0
+    else
+        log_warning "⚠️ Nginx deployment failed - port conflict or other issue"
+        return 1
+    fi
 }
 
 # --- Infrastructure Status Check ---
@@ -378,7 +388,7 @@ infrastructure_status_check() {
     echo ""
     
     echo -e "${C_CYAN}🔍 Service Health Checks:${C_RESET}"
-    for service in postgres mongodb redis rabbitmq nginx; do
+    for service in postgres mongodb redis rabbitmq; do
         status=$(docker-compose -f docker-compose.infrastructure.yml ps $service | grep -o 'healthy\|unhealthy\|Up' | head -1 || echo "Down")
         if [[ "$status" == "healthy" ]] || [[ "$status" == "Up" ]]; then
             echo -e "✅ $service: $status"
@@ -386,6 +396,14 @@ infrastructure_status_check() {
             echo -e "❌ $service: $status"
         fi
     done
+    
+    # Check nginx separately (optional)
+    nginx_status=$(docker-compose -f docker-compose.infrastructure.yml ps nginx 2>/dev/null | grep -o 'healthy\|unhealthy\|Up' | head -1 || echo "Not deployed")
+    if [[ "$nginx_status" == "healthy" ]] || [[ "$nginx_status" == "Up" ]]; then
+        echo -e "✅ nginx: $nginx_status (port 8090)"
+    else
+        echo -e "⚠️ nginx: $nginx_status (optional)"
+    fi
     echo ""
     
     echo -e "${C_CYAN}🗄️ Database Connectivity:${C_RESET}"
@@ -415,7 +433,7 @@ main() {
     deploy_database_infrastructure
     wait_for_database_health
     verify_database_schemas
-    deploy_nginx
+    deploy_nginx || log_warning "⚠️ Nginx deployment failed - continuing without API gateway"
     infrastructure_status_check
     
     echo ""

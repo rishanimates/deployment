@@ -90,24 +90,22 @@ services:
       retries: 5
 
   # ===========================================================================
-  # Nginx API Gateway (waits for services via separate deployment)
+  # Nginx API Gateway (HTTP only for infrastructure deployment)
   # ===========================================================================
   nginx:
     image: nginx:alpine
     container_name: letzgo-nginx
     ports:
-      - "80:80"
-      - "443:443"
+      - "8090:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./ssl:/etc/nginx/ssl:ro
       - ./logs/nginx:/var/log/nginx
     networks:
       - letzgo-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
       interval: 30s
       timeout: 10s
       retries: 3
