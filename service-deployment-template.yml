@@ -1,0 +1,52 @@
+# Template GitHub Actions Workflow for Service Deployment
+# Copy this file to each service repository as .github/workflows/deploy-staging.yml
+# Update the SERVICE_NAME and PORT variables for each service
+
+name: 🚀 Deploy to Staging
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+env:
+  SERVICE_NAME: auth-service  # UPDATE: Change this for each service
+  SERVICE_PORT: 3000         # UPDATE: Change this for each service
+
+jobs:
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to VPS
+        run: |
+          # SSH setup
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          
+          # Deploy service
+          ssh -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'DEPLOY_EOF'
+          set -e
+          
+          SERVICE_NAME="${{ env.SERVICE_NAME }}"
+          SERVICE_PORT="${{ env.SERVICE_PORT }}"
+          
+          echo "🚀 Deploying $SERVICE_NAME to staging"
+          
+          # Service deployment logic here
+          # This template needs to be customized per service
+          
+          echo "✅ $SERVICE_NAME deployed successfully"
+          echo "🔗 Access: http://103.168.19.241:$SERVICE_PORT"
+          DEPLOY_EOF
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_rsa

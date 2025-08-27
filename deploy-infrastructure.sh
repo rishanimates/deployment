@@ -9,7 +9,7 @@ set -e
 # Configuration
 DEPLOY_PATH="/opt/letzgo"
 COMPOSE_FILE="$DEPLOY_PATH/docker-compose.infrastructure.yml"
-ENV_FILE="$DEPLOY_PATH/.env"
+ENV_FILE="$DEPLOY_PATH/.env.staging"
 
 # Color codes
 RED='\033[0;31m'
@@ -135,9 +135,39 @@ RABBITMQ_URL=amqp://admin:$rabbitmq_pass@letzgo-rabbitmq:5672
 DOMAIN_NAME=103.168.19.241
 API_DOMAIN=103.168.19.241
 
+# Service Ports
+AUTH_SERVICE_PORT=3000
+USER_SERVICE_PORT=3001
+CHAT_SERVICE_PORT=3002
+EVENT_SERVICE_PORT=3003
+SHARED_SERVICE_PORT=3004
+SPLITZ_SERVICE_PORT=3005
+
+# Service URLs (for inter-service communication)
+AUTH_SERVICE_URL=http://letzgo-auth-service:3000
+USER_SERVICE_URL=http://letzgo-user-service:3001
+CHAT_SERVICE_URL=http://letzgo-chat-service:3002
+EVENT_SERVICE_URL=http://letzgo-event-service:3003
+SHARED_SERVICE_URL=http://letzgo-shared-service:3004
+SPLITZ_SERVICE_URL=http://letzgo-splitz-service:3005
+
+# External Service URLs (for external access)
+AUTH_SERVICE_EXTERNAL_URL=http://103.168.19.241:3000
+USER_SERVICE_EXTERNAL_URL=http://103.168.19.241:3001
+CHAT_SERVICE_EXTERNAL_URL=http://103.168.19.241:3002
+EVENT_SERVICE_EXTERNAL_URL=http://103.168.19.241:3003
+SHARED_SERVICE_EXTERNAL_URL=http://103.168.19.241:3004
+SPLITZ_SERVICE_EXTERNAL_URL=http://103.168.19.241:3005
+
+# CORS Configuration
+CORS_ORIGIN=http://103.168.19.241:*,http://localhost:*
+
 # Other Settings
 DB_SCHEMA=public
 STORAGE_PROVIDER=local
+
+# Docker Network
+DOCKER_NETWORK=letzgo-network
 EOF
     
     chmod 600 "$ENV_FILE"
