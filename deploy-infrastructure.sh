@@ -205,22 +205,22 @@ deploy_database_infrastructure() {
     
     cd "$DEPLOY_DIR"
     
-    if [ ! -f "docker-compose.prod.yml" ]; then
-        log_error "docker-compose.prod.yml not found in $DEPLOY_DIR"
+    if [ ! -f "docker-compose.infrastructure.yml" ]; then
+        log_error "docker-compose.infrastructure.yml not found in $DEPLOY_DIR"
     fi
     
     # Deploy only database services first
     log_info "Starting PostgreSQL with schema initialization..."
-    docker-compose -f docker-compose.prod.yml up -d postgres
+    docker-compose -f docker-compose.infrastructure.yml up -d postgres
     
     log_info "Starting MongoDB with collection initialization..."
-    docker-compose -f docker-compose.prod.yml up -d mongodb
+    docker-compose -f docker-compose.infrastructure.yml up -d mongodb
     
     log_info "Starting Redis..."
-    docker-compose -f docker-compose.prod.yml up -d redis
+    docker-compose -f docker-compose.infrastructure.yml up -d redis
     
     log_info "Starting RabbitMQ..."
-    docker-compose -f docker-compose.prod.yml up -d rabbitmq
+    docker-compose -f docker-compose.infrastructure.yml up -d rabbitmq
     
     log_success "✅ Database infrastructure containers started"
 }
@@ -234,7 +234,7 @@ wait_for_database_health() {
     # Wait for PostgreSQL
     log_info "Checking PostgreSQL health..."
     for i in {1..60}; do
-        if docker-compose -f docker-compose.prod.yml ps postgres | grep -q "healthy"; then
+        if docker-compose -f docker-compose.infrastructure.yml ps postgres | grep -q "healthy"; then
             log_success "✅ PostgreSQL is healthy"
             break
         fi
@@ -248,7 +248,7 @@ wait_for_database_health() {
     # Wait for MongoDB
     log_info "Checking MongoDB health..."
     for i in {1..60}; do
-        if docker-compose -f docker-compose.prod.yml ps mongodb | grep -q "healthy"; then
+        if docker-compose -f docker-compose.infrastructure.yml ps mongodb | grep -q "healthy"; then
             log_success "✅ MongoDB is healthy"
             break
         fi
@@ -262,7 +262,7 @@ wait_for_database_health() {
     # Wait for Redis
     log_info "Checking Redis health..."
     for i in {1..30}; do
-        if docker-compose -f docker-compose.prod.yml ps redis | grep -q "healthy"; then
+        if docker-compose -f docker-compose.infrastructure.yml ps redis | grep -q "healthy"; then
             log_success "✅ Redis is healthy"
             break
         fi
@@ -276,7 +276,7 @@ wait_for_database_health() {
     # Wait for RabbitMQ
     log_info "Checking RabbitMQ health..."
     for i in {1..30}; do
-        if docker-compose -f docker-compose.prod.yml ps rabbitmq | grep -q "healthy"; then
+        if docker-compose -f docker-compose.infrastructure.yml ps rabbitmq | grep -q "healthy"; then
             log_success "✅ RabbitMQ is healthy"
             break
         fi
@@ -343,12 +343,12 @@ deploy_nginx() {
     
     cd "$DEPLOY_DIR"
     
-    # Deploy Nginx (it will wait for services via depends_on)
-    docker-compose -f docker-compose.prod.yml up -d nginx
+    # Deploy Nginx (basic configuration, services will be added later)
+    docker-compose -f docker-compose.infrastructure.yml up -d nginx
     
     # Wait for Nginx to be ready
     for i in {1..30}; do
-        if docker-compose -f docker-compose.prod.yml ps nginx | grep -q "Up"; then
+        if docker-compose -f docker-compose.infrastructure.yml ps nginx | grep -q "Up"; then
             log_success "✅ Nginx is running"
             break
         fi
@@ -374,12 +374,12 @@ infrastructure_status_check() {
     echo ""
     
     echo -e "${C_CYAN}📊 Container Status:${C_RESET}"
-    docker-compose -f docker-compose.prod.yml ps
+    docker-compose -f docker-compose.infrastructure.yml ps
     echo ""
     
     echo -e "${C_CYAN}🔍 Service Health Checks:${C_RESET}"
     for service in postgres mongodb redis rabbitmq nginx; do
-        status=$(docker-compose -f docker-compose.prod.yml ps $service | grep -o 'healthy\|unhealthy\|Up' | head -1 || echo "Down")
+        status=$(docker-compose -f docker-compose.infrastructure.yml ps $service | grep -o 'healthy\|unhealthy\|Up' | head -1 || echo "Down")
         if [[ "$status" == "healthy" ]] || [[ "$status" == "Up" ]]; then
             echo -e "✅ $service: $status"
         else
