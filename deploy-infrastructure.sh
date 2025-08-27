@@ -453,32 +453,61 @@ wait_for_health() {
     log_step "⏳ Waiting for services to become healthy..."
     
     local services=("postgres" "mongodb" "redis" "rabbitmq")
-    local max_attempts=30
+    local max_attempts=60
     local attempt=1
     
     while [ $attempt -le $max_attempts ]; do
         local healthy_count=0
+        local ready_count=0
         
         for service in "${services[@]}"; do
             local container_name="letzgo-$service"
+            
+            # Check if container is running
             if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
                 healthy_count=$((healthy_count + 1))
+                
+                # Check if service is actually ready
+                case $service in
+                    "postgres")
+                        if docker exec $container_name pg_isready -U postgres >/dev/null 2>&1; then
+                            ready_count=$((ready_count + 1))
+                        fi
+                        ;;
+                    "mongodb")
+                        if docker exec $container_name mongosh --quiet --eval "db.adminCommand('ping')" >/dev/null 2>&1; then
+                            ready_count=$((ready_count + 1))
+                        fi
+                        ;;
+                    "redis")
+                        if docker exec $container_name redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping >/dev/null 2>&1; then
+                            ready_count=$((ready_count + 1))
+                        fi
+                        ;;
+                    "rabbitmq")
+                        if docker exec $container_name rabbitmqctl node_health_check >/dev/null 2>&1; then
+                            ready_count=$((ready_count + 1))
+                        fi
+                        ;;
+                esac
             fi
         done
         
-        log_info "Attempt $attempt/$max_attempts: $healthy_count/${#services[@]} services running"
+        log_info "Attempt $attempt/$max_attempts: $healthy_count/${#services[@]} running, $ready_count/${#services[@]} ready"
         
-        if [ $healthy_count -eq ${#services[@]} ]; then
-            log_success "All services are running!"
+        if [ $ready_count -eq ${#services[@]} ]; then
+            log_success "All services are running and ready!"
             return 0
         fi
         
         if [ $attempt -eq $max_attempts ]; then
-            log_warning "Not all services became healthy within timeout"
+            log_warning "Not all services became ready within timeout"
+            log_info "Running services: $healthy_count/${#services[@]}"
+            log_info "Ready services: $ready_count/${#services[@]}"
             break
         fi
         
-        sleep 10
+        sleep 5
         attempt=$((attempt + 1))
     done
     
