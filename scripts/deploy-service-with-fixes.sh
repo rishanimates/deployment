@@ -184,6 +184,7 @@ deploy_service() {
         -p "$PORT:$PORT" \
         -e NODE_ENV=staging \
         -e PORT="$PORT" \
+        -e HOST="0.0.0.0" \
         -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
         -e MONGODB_PASSWORD="$MONGODB_PASSWORD" \
         -e REDIS_PASSWORD="$REDIS_PASSWORD" \
@@ -211,6 +212,16 @@ deploy_service() {
         -e DB_SCHEMA=public \
         -e DOMAIN_NAME="${DOMAIN_NAME}" \
         -e API_DOMAIN="${API_DOMAIN}" \
+        -e USER_SERVICE_URL="http://letzgo-user-service:3001" \
+        -e USER_SERVICE_VERSION="v1" \
+        -e CHAT_SERVICE_URL="http://letzgo-chat-service:3002" \
+        -e CHAT_SERVICE_VERSION="v1" \
+        -e EVENT_SERVICE_URL="http://letzgo-event-service:3003" \
+        -e EVENT_SERVICE_VERSION="v1" \
+        -e SHARED_SERVICE_URL="http://letzgo-shared-service:3004" \
+        -e SHARED_SERVICE_VERSION="v1" \
+        -e SPLITZ_SERVICE_URL="http://letzgo-splitz-service:3005" \
+        -e SPLITZ_SERVICE_VERSION="v1" \
         -v "/opt/letzgo/logs:/app/logs" \
         -v "/opt/letzgo/uploads:/app/uploads" \
         --restart unless-stopped \
@@ -271,12 +282,46 @@ perform_health_check() {
             continue
         fi
         
-        # Test health endpoint
-        if curl -f -s "http://localhost:$PORT/health" >/dev/null 2>&1; then
+        # Check if port is bound first
+        if ! netstat -tlnp 2>/dev/null | grep -q ":$PORT "; then
+            log_info "⏳ Port $PORT not yet bound, service may still be starting..."
+            if [ $attempt -eq $max_attempts ]; then
+                log_warning "⚠️ Port $PORT never became available"
+                log_info "📊 Currently bound ports:"
+                netstat -tlnp 2>/dev/null | grep -E ":(3000|3001|3002|3003|3004|3005) " || echo "No service ports bound"
+            else
+                log_info "Attempt $attempt/$max_attempts - waiting for port binding, ${wait_time}s..."
+                sleep $wait_time
+                attempt=$((attempt + 1))
+                continue
+            fi
+        fi
+        
+        # Test health endpoint with connection timeout
+        if curl -f -s --connect-timeout 3 --max-time 10 "http://localhost:$PORT/health" >/dev/null 2>&1; then
             log_success "✅ $service_name is healthy!"
             log_info "📊 Health response:"
-            curl -s "http://localhost:$PORT/health" 2>/dev/null | head -3 || echo "Health endpoint responded"
+            curl -s --connect-timeout 3 --max-time 10 "http://localhost:$PORT/health" 2>/dev/null | head -3 || echo "Health endpoint responded"
             return 0
+        fi
+        
+        # Additional diagnostic if health check fails
+        if [ $attempt -ge 3 ]; then
+            log_info "🔍 Additional diagnostics (attempt $attempt):"
+            
+            # Test if port responds at all
+            if nc -z localhost "$PORT" 2>/dev/null; then
+                log_info "✅ Port $PORT is responding"
+                # Try to get any response from the port
+                log_info "📊 Raw response test:"
+                echo "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n" | nc localhost "$PORT" 2>/dev/null | head -5 || echo "No response"
+            else
+                log_warning "⚠️ Port $PORT is not responding"
+            fi
+            
+            # Check recent logs for errors
+            log_info "📋 Recent service logs:"
+            docker logs "letzgo-$service_name" --tail 10 2>/dev/null | tail -5 || echo "No recent logs"
         fi
         
         if [ $attempt -eq $max_attempts ]; then
