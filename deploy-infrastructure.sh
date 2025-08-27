@@ -122,31 +122,31 @@ REDIS_PASSWORD=$REDIS_PASSWORD
 RABBITMQ_PASSWORD=$RABBITMQ_PASSWORD
 
 # --- Database Connection URLs ---
-POSTGRES_URL=postgresql://postgres:$POSTGRES_PASSWORD@postgres:5432/letzgo
-MONGODB_URL=mongodb://admin:$MONGODB_PASSWORD@mongodb:27017/letzgo?authSource=admin
-MONGODB_URI=mongodb://admin:$MONGODB_PASSWORD@mongodb:27017/letzgo?authSource=admin
-REDIS_URL=redis://:$REDIS_PASSWORD@redis:6379
-RABBITMQ_URL=amqp://admin:$RABBITMQ_PASSWORD@rabbitmq:5672
+POSTGRES_URL=postgresql://postgres:$POSTGRES_PASSWORD@letzgo-postgres:5432/letzgo?sslmode=disable
+MONGODB_URL=mongodb://admin:$MONGODB_PASSWORD@letzgo-mongodb:27017/letzgo?authSource=admin
+MONGODB_URI=mongodb://admin:$MONGODB_PASSWORD@letzgo-mongodb:27017/letzgo?authSource=admin
+REDIS_URL=redis://:$REDIS_PASSWORD@letzgo-redis:6379
+RABBITMQ_URL=amqp://admin:$RABBITMQ_PASSWORD@letzgo-rabbitmq:5672
 
 # --- Individual Database Connection Parameters ---
 # MongoDB
-MONGODB_HOST=mongodb
+MONGODB_HOST=letzgo-mongodb
 MONGODB_PORT=27017
 MONGODB_DATABASE=letzgo
 MONGODB_USERNAME=admin
 
 # Redis  
-REDIS_HOST=redis
+REDIS_HOST=letzgo-redis
 REDIS_PORT=6379
 
 # PostgreSQL
-POSTGRES_HOST=postgres
+POSTGRES_HOST=letzgo-postgres
 POSTGRES_PORT=5432
 POSTGRES_DATABASE=letzgo
 POSTGRES_USERNAME=postgres
 
 # RabbitMQ
-RABBITMQ_HOST=rabbitmq
+RABBITMQ_HOST=letzgo-rabbitmq
 RABBITMQ_PORT=5672
 RABBITMQ_USERNAME=admin
 
