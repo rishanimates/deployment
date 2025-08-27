@@ -331,18 +331,18 @@ jobs:
             exit 1
           }
           
-          # Ensure Docker network exists (robust; supports compose-prefixed name)
+          # Ensure Docker network exists (use same network as infrastructure)
           echo "🔍 Checking Docker network status..."
           NETWORK_NAME="letzgo-network"
-          if docker network ls --format "{{.Name}}" | grep -q "^letzgo_letzgo-network$"; then
-            NETWORK_NAME="letzgo_letzgo-network"
-          elif docker network ls --format "{{.Name}}" | grep -q "^letzgo-network$"; then
-            NETWORK_NAME="letzgo-network"
-          else
+          
+          # Always use letzgo-network (same as infrastructure)
+          if ! docker network ls --format "{{.Name}}" | grep -q "^letzgo-network$"; then
             echo "🔗 Creating letzgo-network..."
             docker network create letzgo-network
-            NETWORK_NAME="letzgo-network"
           fi
+          
+          echo "🔍 Infrastructure containers network:"
+          docker ps --format "table {{.Names}}\t{{.Networks}}" | grep -E "(postgres|mongodb|redis|rabbitmq)" || echo "No infrastructure containers found"
           
           # Verify chosen network is accessible
           if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
@@ -356,17 +356,6 @@ jobs:
           # Stop existing container if running
           docker stop letzgo-$SERVICE_NAME || true
           docker rm letzgo-$SERVICE_NAME || true
-          
-          # Load environment variables
-          cd "${{ env.DEPLOY_PATH }}"
-          if [ -f ".env" ]; then
-            set -a
-            source .env
-            set +a
-          else
-            echo "❌ Environment file not found!"
-            exit 1
-          fi
           
           # Ensure proper permissions for container volumes (non-root user 1001:1001)
           echo "🔧 Setting container permissions for logs and uploads..."
@@ -386,18 +375,58 @@ jobs:
           
           echo "SERVICE_NAME=$SERVICE_NAME PORT=$PORT NETWORK_NAME=$NETWORK_NAME"
           
-          # Run new container with database host overrides
+          # Load environment variables and fix database URLs
+          cd "${{ env.DEPLOY_PATH }}"
+          if [ -f ".env" ]; then
+            set -a
+            source .env
+            set +a
+          else
+            echo "❌ Environment file not found!"
+            exit 1
+          fi
+          
+          # Override database connection URLs with correct hostnames
+          POSTGRES_URL="postgresql://postgres:${POSTGRES_PASSWORD}@letzgo-postgres:5432/letzgo?sslmode=disable"
+          MONGODB_URL="mongodb://admin:${MONGODB_PASSWORD}@letzgo-mongodb:27017/letzgo?authSource=admin"
+          MONGODB_URI="mongodb://admin:${MONGODB_PASSWORD}@letzgo-mongodb:27017/letzgo?authSource=admin"
+          REDIS_URL="redis://:${REDIS_PASSWORD}@letzgo-redis:6379"
+          RABBITMQ_URL="amqp://admin:${RABBITMQ_PASSWORD}@letzgo-rabbitmq:5672"
+          
+          # Run new container with corrected database URLs
           docker run -d \
             --name letzgo-$SERVICE_NAME \
             --network "$NETWORK_NAME" \
             -p $PORT:$PORT \
-            --env-file .env \
             -e NODE_ENV=staging \
             -e PORT=$PORT \
+            -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+            -e MONGODB_PASSWORD="$MONGODB_PASSWORD" \
+            -e REDIS_PASSWORD="$REDIS_PASSWORD" \
+            -e RABBITMQ_PASSWORD="$RABBITMQ_PASSWORD" \
+            -e JWT_SECRET="$JWT_SECRET" \
+            -e SERVICE_API_KEY="$SERVICE_API_KEY" \
+            -e POSTGRES_URL="$POSTGRES_URL" \
+            -e MONGODB_URL="$MONGODB_URL" \
+            -e MONGODB_URI="$MONGODB_URI" \
+            -e REDIS_URL="$REDIS_URL" \
+            -e RABBITMQ_URL="$RABBITMQ_URL" \
             -e POSTGRES_HOST=letzgo-postgres \
             -e MONGODB_HOST=letzgo-mongodb \
             -e REDIS_HOST=letzgo-redis \
             -e RABBITMQ_HOST=letzgo-rabbitmq \
+            -e POSTGRES_PORT=5432 \
+            -e MONGODB_PORT=27017 \
+            -e REDIS_PORT=6379 \
+            -e RABBITMQ_PORT=5672 \
+            -e POSTGRES_DATABASE=letzgo \
+            -e MONGODB_DATABASE=letzgo \
+            -e POSTGRES_USERNAME=postgres \
+            -e MONGODB_USERNAME=admin \
+            -e RABBITMQ_USERNAME=admin \
+            -e DB_SCHEMA=public \
+            -e DOMAIN_NAME="$DOMAIN_NAME" \
+            -e API_DOMAIN="$API_DOMAIN" \
             -v "${{ env.DEPLOY_PATH }}/logs:/app/logs" \
             -v "${{ env.DEPLOY_PATH }}/uploads:/app/uploads" \
             --restart unless-stopped \
