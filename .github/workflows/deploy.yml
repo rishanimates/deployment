@@ -144,7 +144,7 @@ jobs:
         run: |
           # Copy infrastructure deployment script
           scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            scripts/deploy-infrastructure-via-actions.sh \
+            deployment/scripts/deploy-infrastructure-via-actions.sh \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
           
           # Execute infrastructure deployment via script

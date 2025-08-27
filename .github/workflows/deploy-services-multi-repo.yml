@@ -305,8 +305,8 @@ jobs:
           
           # Copy deployment scripts
           scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            scripts/deploy-service-with-fixes.sh \
-            scripts/diagnose-and-fix-service-health.sh \
+            deployment/scripts/deploy-service-with-fixes.sh \
+            deployment/scripts/diagnose-and-fix-service-health.sh \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ env.DEPLOY_PATH }}/scripts/
           
           # Make scripts executable
