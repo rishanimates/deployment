@@ -9,7 +9,7 @@ on:
         default: 'all'
         type: string
       branch:
-        description: 'Branch to deploy from'
+        description: 'Branch to deploy services from (applies to service repositories)'
         required: false
         default: 'main'
         type: choice
@@ -17,6 +17,7 @@ on:
           - main
           - develop
           - staging
+          - master
       force_rebuild:
         description: 'Force rebuild Docker images'
         required: false
@@ -30,10 +31,21 @@ jobs:
     environment: staging
     
     steps:
-      - name: Checkout code
+      - name: Checkout deployment repo
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch }}
+        # Always checkout main branch for deployment scripts
+        # The service branch selection happens during deployment
+
+      - name: Show deployment configuration
+        run: |
+          echo "🏗️ Deployment Configuration:"
+          echo "  📁 Deployment repo branch: $(git branch --show-current)"
+          echo "  🌿 Services will be deployed from: ${{ github.event.inputs.branch }} branch"
+          echo "  🎯 Services to deploy: ${{ github.event.inputs.services }}"
+          echo "  🔄 Force rebuild: ${{ github.event.inputs.force_rebuild }}"
+          echo ""
+          echo "📝 Note: If a service repository doesn't have the '${{ github.event.inputs.branch }}' branch,"
+          echo "         the deployment script will automatically fallback to HTTPS and then main branch."
 
       - name: Setup SSH
         run: |

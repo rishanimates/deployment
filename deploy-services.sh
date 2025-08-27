@@ -132,7 +132,7 @@ clone_service_repo() {
     
     # Clone repository
     if git clone -b "$branch" "$repo_url" "$service_dir" >/dev/null 2>&1; then
-        log_success "✅ $service repository cloned successfully"
+        log_success "✅ $service repository cloned successfully from $branch branch"
         
         # Show commit info
         cd "$service_dir"
@@ -142,17 +142,40 @@ clone_service_repo() {
         
         return 0
     else
-        log_error "❌ Failed to clone $service repository"
+        log_warning "⚠️ Failed to clone $service repository from $branch branch via SSH"
         log_info "Trying HTTPS URL as fallback..."
         
         # Try HTTPS as fallback
         local https_url=$(echo "$repo_url" | sed 's/git@github.com:/https:\/\/github.com\//')
         if git clone -b "$branch" "$https_url" "$service_dir" >/dev/null 2>&1; then
-            log_success "✅ $service repository cloned via HTTPS"
+            log_success "✅ $service repository cloned via HTTPS from $branch branch"
+            
+            # Show commit info
+            cd "$service_dir"
+            local commit_hash=$(git rev-parse --short HEAD)
+            local commit_message=$(git log -1 --pretty=format:"%s")
+            log_info "Commit: $commit_hash - $commit_message"
+            
             return 0
         else
-            log_error "❌ Failed to clone $service repository via HTTPS"
-            return 1
+            log_warning "⚠️ Branch '$branch' not found, trying main branch..."
+            
+            # Try main branch as final fallback
+            if git clone -b "main" "$https_url" "$service_dir" >/dev/null 2>&1; then
+                log_success "✅ $service repository cloned from main branch (fallback)"
+                
+                # Show commit info
+                cd "$service_dir"
+                local commit_hash=$(git rev-parse --short HEAD)
+                local commit_message=$(git log -1 --pretty=format:"%s")
+                log_info "Commit: $commit_hash - $commit_message"
+                log_warning "⚠️ Note: Deployed from 'main' branch instead of '$branch'"
+                
+                return 0
+            else
+                log_error "❌ Failed to clone $service repository from any branch"
+                return 1
+            fi
         fi
     fi
 }
