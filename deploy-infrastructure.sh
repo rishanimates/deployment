@@ -1,449 +1,582 @@
 #!/bin/bash
 
-# ==============================================================================
-# Fresh Infrastructure Deployment Script
-# ==============================================================================
-# This script completely removes old infrastructure and deploys fresh
-# with proper database initialization and schema validation
-# ==============================================================================
+# LetzGo Infrastructure Deployment Script
+# This script deploys all databases and installs required schemas
+# Usage: ./deploy-infrastructure.sh [--force-rebuild]
 
 set -e
 
-# --- Colors for logging ---
-C_BLUE="\033[0;34m"
-C_GREEN="\033[0;32m"
-C_RED="\033[0;31m"
-C_YELLOW="\033[0;33m"
-C_PURPLE="\033[0;35m"
-C_CYAN="\033[0;36m"
-C_RESET="\033[0m"
+# Configuration
+DEPLOY_PATH="/opt/letzgo"
+COMPOSE_FILE="$DEPLOY_PATH/docker-compose.infrastructure.yml"
+ENV_FILE="$DEPLOY_PATH/.env"
 
-# --- Configuration ---
-DEPLOY_DIR="/opt/letzgo"
-LOG_FILE="/opt/letzgo/logs/infrastructure-deployment.log"
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+PURPLE='\033[0;35m'
+NC='\033[0m'
 
-# --- Helper Functions ---
-log_info() {
-    echo -e "${C_BLUE}[INFO] $1${C_RESET}" | tee -a "$LOG_FILE"
+# Logging functions
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "${PURPLE}[STEP]${NC} $1"; }
+
+# Print banner
+print_banner() {
+    echo -e "${CYAN}"
+    echo "============================================================================"
+    echo "🏗️  LetzGo Infrastructure Deployment"
+    echo "============================================================================"
+    echo -e "${NC}"
+    echo "📅 Started: $(date)"
+    echo "👤 User: $(whoami)"
+    echo "📁 Deploy Path: $DEPLOY_PATH"
+    echo ""
 }
 
-log_success() {
-    echo -e "${C_GREEN}[SUCCESS] $1${C_RESET}" | tee -a "$LOG_FILE"
-}
-
-log_warning() {
-    echo -e "${C_YELLOW}[WARNING] $1${C_RESET}" | tee -a "$LOG_FILE"
-}
-
-log_error() {
-    echo -e "${C_RED}[ERROR] $1${C_RESET}" | tee -a "$LOG_FILE"
-    exit 1
-}
-
-# --- Clean Old Infrastructure ---
-cleanup_old_infrastructure() {
-    log_info "🗑️ Cleaning up old infrastructure..."
+# Check system requirements
+check_requirements() {
+    log_step "🔍 Checking system requirements..."
     
-    # Stop and remove all containers
-    cd "$DEPLOY_DIR" 2>/dev/null || true
-    docker-compose -f docker-compose.prod.yml down --volumes --remove-orphans 2>/dev/null || true
-    
-    # Remove all letzgo containers
-    docker ps -a | grep letzgo | awk '{print $1}' | xargs -r docker rm -f 2>/dev/null || true
-    
-    # Remove all letzgo images
-    docker images | grep letzgo | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
-    
-    # Remove all letzgo volumes
-    docker volume ls | grep letzgo | awk '{print $2}' | xargs -r docker volume rm 2>/dev/null || true
-    
-    # Clean up networks
-    docker network rm letzgo-network 2>/dev/null || true
-    
-    # Clean up directories
-    rm -rf "$DEPLOY_DIR/logs/"* "$DEPLOY_DIR/uploads/"* 2>/dev/null || true
-    
-    log_success "✅ Old infrastructure cleaned"
-}
-
-# --- Setup Directories ---
-setup_directories() {
-    log_info "📁 Setting up deployment directories..."
-    
-    mkdir -p "$DEPLOY_DIR"
-    mkdir -p "/opt/letzgo/logs"
-    mkdir -p "/opt/letzgo/uploads"
-    mkdir -p "/opt/letzgo/ssl"
-    mkdir -p "/opt/letzgo/database"
-    mkdir -p "/opt/letzgo/nginx/conf.d"
-    
-    # Set proper permissions for container access
-    chown -R 1001:1001 "/opt/letzgo/logs" "/opt/letzgo/uploads"
-    chmod -R 755 "/opt/letzgo/logs" "/opt/letzgo/uploads"
-    
-    # Create log file
-    touch "$LOG_FILE"
-    chmod 644 "$LOG_FILE"
-    
-    log_success "✅ Directories configured"
-}
-
-# --- Generate Environment File ---
-setup_environment_file() {
-    log_info "🔧 Generating secure environment configuration..."
-    
-    cd "$DEPLOY_DIR"
-    
-    if [ ! -f "env.template" ]; then
-        log_error "env.template not found in $DEPLOY_DIR"
+    # Check Docker
+    if ! command -v docker >/dev/null 2>&1; then
+        log_error "Docker is not installed"
+        return 1
+    elif ! docker info >/dev/null 2>&1; then
+        log_error "Docker daemon is not running"
+        return 1
+    else
+        log_info "✅ Docker: $(docker --version | cut -d' ' -f3)"
     fi
     
-    # Generate secure passwords (hex format for reliability)
-    POSTGRES_PASSWORD=$(openssl rand -hex 16)
-    MONGODB_PASSWORD=$(openssl rand -hex 16)
-    REDIS_PASSWORD=$(openssl rand -hex 16)
-    RABBITMQ_PASSWORD=$(openssl rand -hex 16)
-    JWT_SECRET=$(openssl rand -hex 32)
-    SERVICE_API_KEY=$(openssl rand -hex 32)
+    # Check Docker Compose
+    if ! command -v docker-compose >/dev/null 2>&1; then
+        log_error "Docker Compose is not installed"
+        return 1
+    else
+        log_info "✅ Docker Compose: $(docker-compose --version | cut -d' ' -f3)"
+    fi
     
-    log_info "Generated secure passwords: POSTGRES(${#POSTGRES_PASSWORD}), MONGODB(${#MONGODB_PASSWORD}), JWT(${#JWT_SECRET})"
+    log_success "All system requirements met"
+    return 0
+}
+
+# Setup directories
+setup_directories() {
+    log_step "📁 Setting up directory structure..."
     
-    # Create .env file directly with generated values
-    cat > .env << EOF
-# ==============================================================================
-# LetzGo Staging Environment Configuration - AUTO-GENERATED
-# ==============================================================================
-# Generated on: $(date)
+    sudo mkdir -p "$DEPLOY_PATH"
+    sudo chown -R $(whoami):$(whoami) "$DEPLOY_PATH" 2>/dev/null || true
+    mkdir -p "$DEPLOY_PATH"/{logs,uploads,database/init,nginx/conf.d,ssl}
+    chmod -R 755 "$DEPLOY_PATH"
+    
+    log_success "Directory structure created"
+}
 
-# --- Database Passwords ---
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-MONGODB_PASSWORD=$MONGODB_PASSWORD
-REDIS_PASSWORD=$REDIS_PASSWORD
-RABBITMQ_PASSWORD=$RABBITMQ_PASSWORD
+# Generate secure environment
+generate_environment() {
+    log_step "🔐 Generating secure environment configuration..."
+    
+    local postgres_pass=$(openssl rand -hex 20)
+    local mongodb_pass=$(openssl rand -hex 20)
+    local redis_pass=$(openssl rand -hex 20)
+    local rabbitmq_pass=$(openssl rand -hex 20)
+    local jwt_secret=$(openssl rand -hex 32)
+    local service_api_key=$(openssl rand -hex 32)
+    
+    cat > "$ENV_FILE" << EOF
+# LetzGo Infrastructure Environment - Auto-generated $(date)
+NODE_ENV=staging
+ENVIRONMENT=staging
 
-# --- Database Connection URLs ---
-POSTGRES_URL=postgresql://postgres:$POSTGRES_PASSWORD@letzgo-postgres:5432/letzgo?sslmode=disable
-MONGODB_URL=mongodb://admin:$MONGODB_PASSWORD@letzgo-mongodb:27017/letzgo?authSource=admin
-MONGODB_URI=mongodb://admin:$MONGODB_PASSWORD@letzgo-mongodb:27017/letzgo?authSource=admin
-REDIS_URL=redis://:$REDIS_PASSWORD@letzgo-redis:6379
-RABBITMQ_URL=amqp://admin:$RABBITMQ_PASSWORD@letzgo-rabbitmq:5672
+# Database Passwords
+POSTGRES_PASSWORD=$postgres_pass
+MONGODB_PASSWORD=$mongodb_pass
+REDIS_PASSWORD=$redis_pass
+RABBITMQ_PASSWORD=$rabbitmq_pass
 
-# --- Individual Database Connection Parameters ---
-# MongoDB
-MONGODB_HOST=letzgo-mongodb
-MONGODB_PORT=27017
-MONGODB_DATABASE=letzgo
-MONGODB_USERNAME=admin
+# Application Secrets
+JWT_SECRET=$jwt_secret
+SERVICE_API_KEY=$service_api_key
 
-# Redis  
-REDIS_HOST=letzgo-redis
-REDIS_PORT=6379
-
-# PostgreSQL
+# PostgreSQL Configuration
 POSTGRES_HOST=letzgo-postgres
 POSTGRES_PORT=5432
-POSTGRES_DATABASE=letzgo
 POSTGRES_USERNAME=postgres
+POSTGRES_DATABASE=letzgo
+POSTGRES_URL=postgresql://postgres:$postgres_pass@letzgo-postgres:5432/letzgo?sslmode=disable
 
-# RabbitMQ
+# MongoDB Configuration
+MONGODB_HOST=letzgo-mongodb
+MONGODB_PORT=27017
+MONGODB_USERNAME=admin
+MONGODB_DATABASE=letzgo
+MONGODB_URL=mongodb://admin:$mongodb_pass@letzgo-mongodb:27017/letzgo?authSource=admin
+MONGODB_URI=mongodb://admin:$mongodb_pass@letzgo-mongodb:27017/letzgo?authSource=admin
+
+# Redis Configuration
+REDIS_HOST=letzgo-redis
+REDIS_PORT=6379
+REDIS_URL=redis://:$redis_pass@letzgo-redis:6379
+
+# RabbitMQ Configuration
 RABBITMQ_HOST=letzgo-rabbitmq
 RABBITMQ_PORT=5672
 RABBITMQ_USERNAME=admin
+RABBITMQ_URL=amqp://admin:$rabbitmq_pass@letzgo-rabbitmq:5672
 
-# --- Database Schema Configuration ---
-DB_SCHEMA=public
-
-# --- Application Secrets ---
-JWT_SECRET=$JWT_SECRET
-SERVICE_API_KEY=$SERVICE_API_KEY
-
-# --- Payment Gateway (Razorpay) ---
-RAZORPAY_KEY_ID=your_razorpay_key_id
-RAZORPAY_KEY_SECRET=your_razorpay_key_secret
-
-# --- Storage Configuration ---
-STORAGE_PROVIDER=local
-
-# --- AWS S3 Configuration (if STORAGE_PROVIDER=s3) ---
-AWS_ACCESS_KEY_ID=your_aws_access_key_id
-AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
-AWS_REGION=us-east-1
-AWS_S3_BUCKET=your_s3_bucket_name
-
-# --- Cloudinary Configuration (if STORAGE_PROVIDER=cloudinary) ---
-CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
-CLOUDINARY_API_KEY=your_cloudinary_api_key
-CLOUDINARY_API_SECRET=your_cloudinary_api_secret
-
-# --- Domain Configuration ---
+# Domain Configuration
 DOMAIN_NAME=103.168.19.241
 API_DOMAIN=103.168.19.241
+
+# Other Settings
+DB_SCHEMA=public
+STORAGE_PROVIDER=local
 EOF
     
-    # Set proper permissions
-    chmod 600 .env
-    
-    log_success "✅ Environment configuration generated with secure passwords"
+    chmod 600 "$ENV_FILE"
+    log_success "Environment configuration generated"
 }
 
-# --- Create Docker Network ---
-setup_docker_network() {
-    log_info "🌐 Setting up Docker network..."
+# Create database schemas - will be continued in next message due to length
+create_database_schemas() {
+    log_step "📊 Creating database schemas..."
     
-    # Remove existing network if it exists
-    docker network rm letzgo-network 2>/dev/null || true
-    
-    # Create new network
-    docker network create letzgo-network --driver bridge
-    
-    log_success "✅ Docker network 'letzgo-network' created"
+    # PostgreSQL schema
+    cat > "$DEPLOY_PATH/database/init/01-init-postgres.sql" << 'EOF'
+-- LetzGo PostgreSQL Database Initialization
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "timescaledb" CASCADE;
+
+-- Users table
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    phone VARCHAR(20) UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    first_name VARCHAR(100),
+    last_name VARCHAR(100),
+    bio TEXT,
+    avatar_url VARCHAR(500),
+    birth_date DATE,
+    is_email_verified BOOLEAN DEFAULT FALSE,
+    is_phone_verified BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Groups table
+CREATE TABLE IF NOT EXISTS groups (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    avatar_url VARCHAR(500),
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Group memberships
+CREATE TABLE IF NOT EXISTS group_memberships (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    group_id UUID REFERENCES groups(id) ON DELETE CASCADE,
+    role VARCHAR(20) DEFAULT 'member',
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, group_id)
+);
+
+-- Events table
+CREATE TABLE IF NOT EXISTS events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title VARCHAR(200) NOT NULL,
+    description TEXT,
+    location VARCHAR(500),
+    start_time TIMESTAMPTZ NOT NULL,
+    end_time TIMESTAMPTZ,
+    created_by UUID REFERENCES users(id),
+    group_id UUID REFERENCES groups(id),
+    max_participants INTEGER,
+    is_public BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Event participants
+CREATE TABLE IF NOT EXISTS event_participants (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'going',
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(event_id, user_id)
+);
+
+-- Expenses table
+CREATE TABLE IF NOT EXISTS expenses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title VARCHAR(200) NOT NULL,
+    description TEXT,
+    amount DECIMAL(10,2) NOT NULL,
+    currency VARCHAR(3) DEFAULT 'INR',
+    paid_by UUID REFERENCES users(id),
+    group_id UUID REFERENCES groups(id),
+    event_id UUID REFERENCES events(id),
+    category VARCHAR(50),
+    receipt_url VARCHAR(500),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Expense splits
+CREATE TABLE IF NOT EXISTS expense_splits (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    expense_id UUID REFERENCES expenses(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    amount DECIMAL(10,2) NOT NULL,
+    is_paid BOOLEAN DEFAULT FALSE,
+    paid_at TIMESTAMPTZ,
+    UNIQUE(expense_id, user_id)
+);
+
+-- Create indexes
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_group_memberships_user_id ON group_memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_events_created_by ON events(created_by);
+CREATE INDEX IF NOT EXISTS idx_expenses_paid_by ON expenses(paid_by);
+
+-- Grant permissions
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres;
+EOF
+
+    # MongoDB schema
+    cat > "$DEPLOY_PATH/database/init/01-init-mongodb.js" << 'EOF'
+// LetzGo MongoDB Database Initialization
+print('🚀 Starting LetzGo MongoDB initialization...');
+
+db = db.getSiblingDB('letzgo');
+
+// Chat rooms collection
+db.createCollection('chat_rooms', {
+  validator: {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['name', 'type', 'created_by', 'created_at'],
+      properties: {
+        name: { bsonType: 'string', maxLength: 100 },
+        type: { enum: ['group', 'event', 'direct'] },
+        description: { bsonType: 'string', maxLength: 500 },
+        participants: { bsonType: 'array', items: { bsonType: 'string' } },
+        created_by: { bsonType: 'string' },
+        created_at: { bsonType: 'date' }
+      }
+    }
+  }
+});
+
+// Expenses collection
+db.createCollection('expenses', {
+  validator: {
+    $jsonSchema: {
+      bsonType: 'object',
+      required: ['title', 'amount', 'currency', 'paid_by', 'group_id', 'created_at'],
+      properties: {
+        title: { bsonType: 'string', maxLength: 200 },
+        amount: { bsonType: 'number', minimum: 0 },
+        currency: { bsonType: 'string', pattern: '^[A-Z]{3}$' },
+        paid_by: { bsonType: 'string' },
+        group_id: { bsonType: 'string' },
+        created_at: { bsonType: 'date' }
+      }
+    }
+  }
+});
+
+// Create indexes
+db.chat_rooms.createIndex({ 'created_at': -1 });
+db.expenses.createIndex({ 'group_id': 1, 'created_at': -1 });
+
+print('✅ LetzGo MongoDB initialization completed!');
+EOF
+
+    log_success "Database schemas created"
 }
 
-# --- Deploy Database Infrastructure ---
-deploy_database_infrastructure() {
-    log_info "🏗️ Deploying database infrastructure..."
+# Create Docker Compose configuration
+create_docker_compose() {
+    log_step "🐳 Creating Docker Compose configuration..."
     
-    cd "$DEPLOY_DIR"
+    cat > "$COMPOSE_FILE" << 'EOF'
+version: '3.8'
+
+networks:
+  letzgo-network:
+    driver: bridge
+    name: letzgo-network
+
+volumes:
+  letzgo-postgres-data:
+  letzgo-mongodb-data:
+  letzgo-redis-data:
+  letzgo-rabbitmq-data:
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg14
+    container_name: letzgo-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=letzgo
+      - TIMESCALEDB_TELEMETRY=off
+    ports:
+      - "5432:5432"
+    volumes:
+      - letzgo-postgres-data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d letzgo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:6.0
+    container_name: letzgo-mongodb
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGODB_PASSWORD}
+      - MONGO_INITDB_DATABASE=letzgo
+    ports:
+      - "27017:27017"
+    volumes:
+      - letzgo-mongodb-data:/data/db
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: letzgo-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    volumes:
+      - letzgo-redis-data:/data
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "auth", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: letzgo-rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - letzgo-rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - letzgo-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+EOF
+
+    log_success "Docker Compose configuration created"
+}
+
+# Cleanup existing infrastructure
+cleanup_existing() {
+    log_step "🧹 Cleaning up existing infrastructure..."
     
-    if [ ! -f "docker-compose.infrastructure.yml" ]; then
-        log_error "docker-compose.infrastructure.yml not found in $DEPLOY_DIR"
+    local containers=("letzgo-postgres" "letzgo-mongodb" "letzgo-redis" "letzgo-rabbitmq")
+    
+    for container in "${containers[@]}"; do
+        if docker ps -a --format "{{.Names}}" | grep -q "^$container$"; then
+            log_info "Stopping and removing $container..."
+            docker stop "$container" >/dev/null 2>&1 || true
+            docker rm "$container" >/dev/null 2>&1 || true
+        fi
+    done
+    
+    if docker network ls --format "{{.Name}}" | grep -q "^letzgo-network$"; then
+        log_info "Removing existing network..."
+        docker network rm letzgo-network >/dev/null 2>&1 || true
     fi
     
-    # Deploy only database services first
-    log_info "Starting PostgreSQL with schema initialization..."
-    docker-compose -f docker-compose.infrastructure.yml up -d postgres
-    
-    log_info "Starting MongoDB with collection initialization..."
-    docker-compose -f docker-compose.infrastructure.yml up -d mongodb
-    
-    log_info "Starting Redis..."
-    docker-compose -f docker-compose.infrastructure.yml up -d redis
-    
-    log_info "Starting RabbitMQ..."
-    docker-compose -f docker-compose.infrastructure.yml up -d rabbitmq
-    
-    log_success "✅ Database infrastructure containers started"
+    log_success "Cleanup completed"
 }
 
-# --- Wait for Database Health ---
-wait_for_database_health() {
-    log_info "⏳ Waiting for databases to become healthy..."
+# Deploy infrastructure
+deploy_infrastructure() {
+    log_step "🚀 Deploying infrastructure services..."
     
-    cd "$DEPLOY_DIR"
+    cd "$DEPLOY_PATH"
+    set -a; source "$ENV_FILE"; set +a
+    docker-compose -f "$COMPOSE_FILE" up -d
     
-    # Wait for PostgreSQL
-    log_info "Checking PostgreSQL health..."
-    for i in {1..60}; do
-        if docker-compose -f docker-compose.infrastructure.yml ps postgres | grep -q "healthy"; then
-            log_success "✅ PostgreSQL is healthy"
-            break
-        fi
-        if [ $i -eq 60 ]; then
-            log_error "PostgreSQL failed to become healthy after 10 minutes"
-        fi
-        echo "Attempt $i/60 - PostgreSQL not ready yet, waiting 10 seconds..."
-        sleep 10
-    done
-    
-    # Wait for MongoDB
-    log_info "Checking MongoDB health..."
-    for i in {1..60}; do
-        if docker-compose -f docker-compose.infrastructure.yml ps mongodb | grep -q "healthy"; then
-            log_success "✅ MongoDB is healthy"
-            break
-        fi
-        if [ $i -eq 60 ]; then
-            log_error "MongoDB failed to become healthy after 10 minutes"
-        fi
-        echo "Attempt $i/60 - MongoDB not ready yet, waiting 10 seconds..."
-        sleep 10
-    done
-    
-    # Wait for Redis
-    log_info "Checking Redis health..."
-    for i in {1..30}; do
-        if docker-compose -f docker-compose.infrastructure.yml ps redis | grep -q "healthy"; then
-            log_success "✅ Redis is healthy"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            log_error "Redis failed to become healthy after 5 minutes"
-        fi
-        echo "Attempt $i/30 - Redis not ready yet, waiting 10 seconds..."
-        sleep 10
-    done
-    
-    # Wait for RabbitMQ
-    log_info "Checking RabbitMQ health..."
-    for i in {1..30}; do
-        if docker-compose -f docker-compose.infrastructure.yml ps rabbitmq | grep -q "healthy"; then
-            log_success "✅ RabbitMQ is healthy"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            log_error "RabbitMQ failed to become healthy after 5 minutes"
-        fi
-        echo "Attempt $i/30 - RabbitMQ not ready yet, waiting 10 seconds..."
-        sleep 10
-    done
-    
-    log_success "🎉 All database services are healthy!"
+    log_success "Infrastructure deployment initiated"
 }
 
-# --- Verify Database Schemas ---
-verify_database_schemas() {
-    log_info "🔍 Verifying database schemas..."
+# Wait for services to be healthy
+wait_for_health() {
+    log_step "⏳ Waiting for services to become healthy..."
     
-    cd "$DEPLOY_DIR"
+    local services=("postgres" "mongodb" "redis" "rabbitmq")
+    local max_attempts=30
+    local attempt=1
     
-    # Check PostgreSQL tables
-    log_info "Checking PostgreSQL tables..."
-    POSTGRES_TABLES=$(docker exec letzgo-postgres psql -U postgres -d letzgo -t -c "
-        SELECT COUNT(*) FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name IN ('users', 'groups', 'events', 'expenses', 'notifications', 'chat_rooms', 'chat_messages');
-    " 2>/dev/null | xargs || echo "0")
-    
-    if [ "$POSTGRES_TABLES" -gt 0 ]; then
-        log_success "✅ PostgreSQL tables created: $POSTGRES_TABLES tables found"
+    while [ $attempt -le $max_attempts ]; do
+        local healthy_count=0
         
-        # List the tables
-        docker exec letzgo-postgres psql -U postgres -d letzgo -c "
-            SELECT table_name FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            ORDER BY table_name;
-        " 2>/dev/null || true
-    else
-        log_warning "⚠️ PostgreSQL tables not found - will be created on service startup"
-    fi
-    
-    # Check MongoDB collections
-    log_info "Checking MongoDB collections..."
-    MONGODB_COLLECTIONS=$(docker exec letzgo-mongodb mongosh --quiet --eval "
-        db.getSiblingDB('letzgo').getCollectionNames().length
-    " 2>/dev/null || echo "0")
-    
-    if [ "$MONGODB_COLLECTIONS" -gt 0 ]; then
-        log_success "✅ MongoDB collections created: $MONGODB_COLLECTIONS collections found"
-        
-        # List the collections
-        docker exec letzgo-mongodb mongosh --quiet --eval "
-            db.getSiblingDB('letzgo').getCollectionNames()
-        " 2>/dev/null || true
-    else
-        log_warning "⚠️ MongoDB collections not found - will be created on service startup"
-    fi
-    
-    log_success "✅ Database schema verification completed"
-}
-
-# --- Deploy Nginx ---
-deploy_nginx() {
-    log_info "🌐 Deploying Nginx API Gateway..."
-    
-    cd "$DEPLOY_DIR"
-    
-    # Check if ports are available
-    if netstat -tlnp 2>/dev/null | grep -q ":8090 "; then
-        log_warning "⚠️ Port 8090 is already in use - skipping Nginx deployment"
-        return 1
-    fi
-    
-    # Deploy Nginx (basic configuration, services will be added later)
-    if docker-compose -f docker-compose.infrastructure.yml up -d nginx; then
-        log_info "Nginx container started, checking health..."
-        
-        # Wait for Nginx to be ready
-        for i in {1..15}; do
-            if docker-compose -f docker-compose.infrastructure.yml ps nginx | grep -q "Up"; then
-                log_success "✅ Nginx is running on port 8090"
-                return 0
+        for service in "${services[@]}"; do
+            local container_name="letzgo-$service"
+            if docker ps --format "{{.Names}}" | grep -q "^$container_name$"; then
+                healthy_count=$((healthy_count + 1))
             fi
-            echo "Attempt $i/15 - Nginx not ready yet, waiting 3 seconds..."
-            sleep 3
         done
         
-        log_warning "⚠️ Nginx started but may not be fully ready"
-        return 0
-    else
-        log_warning "⚠️ Nginx deployment failed - port conflict or other issue"
-        return 1
-    fi
-}
-
-# --- Infrastructure Status Check ---
-infrastructure_status_check() {
-    log_info "📊 Infrastructure Status Check..."
-    
-    cd "$DEPLOY_DIR"
-    
-    echo ""
-    echo -e "${C_PURPLE}============================================================================${C_RESET}"
-    echo -e "${C_PURPLE}🏗️ INFRASTRUCTURE DEPLOYMENT STATUS${C_RESET}"
-    echo -e "${C_PURPLE}============================================================================${C_RESET}"
-    echo ""
-    
-    echo -e "${C_CYAN}📊 Container Status:${C_RESET}"
-    docker-compose -f docker-compose.infrastructure.yml ps
-    echo ""
-    
-    echo -e "${C_CYAN}🔍 Service Health Checks:${C_RESET}"
-    for service in postgres mongodb redis rabbitmq; do
-        status=$(docker-compose -f docker-compose.infrastructure.yml ps $service | grep -o 'healthy\|unhealthy\|Up' | head -1 || echo "Down")
-        if [[ "$status" == "healthy" ]] || [[ "$status" == "Up" ]]; then
-            echo -e "✅ $service: $status"
-        else
-            echo -e "❌ $service: $status"
+        log_info "Attempt $attempt/$max_attempts: $healthy_count/${#services[@]} services running"
+        
+        if [ $healthy_count -eq ${#services[@]} ]; then
+            log_success "All services are running!"
+            return 0
         fi
+        
+        if [ $attempt -eq $max_attempts ]; then
+            log_warning "Not all services became healthy within timeout"
+            break
+        fi
+        
+        sleep 10
+        attempt=$((attempt + 1))
     done
     
-    # Check nginx separately (optional)
-    nginx_status=$(docker-compose -f docker-compose.infrastructure.yml ps nginx 2>/dev/null | grep -o 'healthy\|unhealthy\|Up' | head -1 || echo "Not deployed")
-    if [[ "$nginx_status" == "healthy" ]] || [[ "$nginx_status" == "Up" ]]; then
-        echo -e "✅ nginx: $nginx_status (port 8090)"
+    return 0
+}
+
+# Verify database connectivity
+verify_databases() {
+    log_step "🔍 Verifying database connectivity..."
+    
+    # Test PostgreSQL
+    if docker exec letzgo-postgres pg_isready -U postgres -d letzgo >/dev/null 2>&1; then
+        log_success "✅ PostgreSQL: Connected and ready"
     else
-        echo -e "⚠️ nginx: $nginx_status (optional)"
+        log_error "❌ PostgreSQL: Connection failed"
     fi
-    echo ""
     
-    echo -e "${C_CYAN}🗄️ Database Connectivity:${C_RESET}"
-    docker exec letzgo-postgres pg_isready -U postgres -d letzgo >/dev/null 2>&1 && echo "✅ PostgreSQL ready" || echo "❌ PostgreSQL not ready"
-    docker exec letzgo-mongodb mongosh --eval 'db.adminCommand("ping")' >/dev/null 2>&1 && echo "✅ MongoDB ready" || echo "❌ MongoDB not ready"
-    docker exec letzgo-redis redis-cli ping >/dev/null 2>&1 && echo "✅ Redis ready" || echo "❌ Redis not ready"
-    docker exec letzgo-rabbitmq rabbitmq-diagnostics ping >/dev/null 2>&1 && echo "✅ RabbitMQ ready" || echo "❌ RabbitMQ not ready"
-    echo ""
+    # Test MongoDB
+    if docker exec letzgo-mongodb mongosh --quiet --eval "db.adminCommand('ping')" >/dev/null 2>&1; then
+        log_success "✅ MongoDB: Connected and ready"
+    else
+        log_error "❌ MongoDB: Connection failed"
+    fi
     
-    log_success "🎉 Infrastructure deployment completed successfully!"
-    log_info "📋 Next step: Deploy services using deploy-services.yml workflow"
+    # Test Redis
+    if docker exec letzgo-redis redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping >/dev/null 2>&1; then
+        log_success "✅ Redis: Connected and ready"
+    else
+        log_error "❌ Redis: Connection failed"
+    fi
+    
+    # Test RabbitMQ
+    if docker exec letzgo-rabbitmq rabbitmqctl status >/dev/null 2>&1; then
+        log_success "✅ RabbitMQ: Connected and ready"
+    else
+        log_error "❌ RabbitMQ: Connection failed"
+    fi
 }
 
-# --- Main Deployment Function ---
+# Display final status
+display_status() {
+    log_step "📊 Infrastructure Status Report"
+    
+    echo ""
+    echo -e "${CYAN}🐳 Container Status:${NC}"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep letzgo || echo "No containers found"
+    
+    echo ""
+    echo -e "${CYAN}🔗 Service URLs:${NC}"
+    echo "PostgreSQL: postgresql://postgres:***@103.168.19.241:5432/letzgo"
+    echo "MongoDB: mongodb://admin:***@103.168.19.241:27017/letzgo"
+    echo "Redis: redis://:***@103.168.19.241:6379"
+    echo "RabbitMQ Management: http://103.168.19.241:15672"
+    
+    echo ""
+    echo -e "${CYAN}📁 Files Created:${NC}"
+    echo "Environment: $ENV_FILE"
+    echo "Docker Compose: $COMPOSE_FILE"
+}
+
+# Main execution
 main() {
-    echo ""
-    echo -e "${C_PURPLE}============================================================================${C_RESET}"
-    echo -e "${C_PURPLE}🚀 STARTING FRESH INFRASTRUCTURE DEPLOYMENT${C_RESET}"
-    echo -e "${C_PURPLE}============================================================================${C_RESET}"
-    echo ""
+    local force_rebuild=false
     
-    # Execute deployment steps
-    cleanup_old_infrastructure
+    for arg in "$@"; do
+        case $arg in
+            --force-rebuild) force_rebuild=true ;;
+        esac
+    done
+    
+    print_banner
+    
+    if ! check_requirements; then
+        log_error "System requirements not met. Aborting."
+        exit 1
+    fi
+    
     setup_directories
-    setup_environment_file
-    setup_docker_network
-    deploy_database_infrastructure
-    wait_for_database_health
-    verify_database_schemas
-    deploy_nginx || log_warning "⚠️ Nginx deployment failed - continuing without API gateway"
-    infrastructure_status_check
+    generate_environment
+    create_database_schemas
+    create_docker_compose
+    
+    if [ "$force_rebuild" = true ]; then
+        cleanup_existing
+    fi
+    
+    deploy_infrastructure
+    wait_for_health
+    verify_databases
+    display_status
     
     echo ""
-    echo -e "${C_GREEN}🎉 Fresh infrastructure deployment completed successfully!${C_RESET}"
-    echo -e "${C_CYAN}📱 Ready for service deployment and mobile app testing${C_RESET}"
+    echo -e "${GREEN}============================================================================${NC}"
+    echo -e "${GREEN}🎉 LetzGo Infrastructure Deployment Completed Successfully!${NC}"
+    echo -e "${GREEN}============================================================================${NC}"
+    echo "📅 Completed: $(date)"
+    echo "⏱️  Next Step: Run ./deploy-services.sh to deploy application services"
     echo ""
 }
 
-# --- Error Handling ---
-trap 'log_error "Infrastructure deployment failed at line $LINENO"' ERR
-
-# --- Execution ---
 main "$@"

@@ -1,22 +1,17 @@
-name: 🚀 Deploy Services
+name: 🏗️ Deploy Infrastructure
 
 on:
   workflow_dispatch:
     inputs:
-      services:
-        description: 'Services to deploy (comma-separated or "all")'
-        required: false
-        default: 'all'
-        type: string
       force_rebuild:
-        description: 'Force rebuild Docker images'
+        description: 'Force complete rebuild'
         required: false
         default: false
         type: boolean
 
 jobs:
   deploy:
-    name: Deploy Services
+    name: Deploy Infrastructure
     runs-on: ubuntu-latest
     environment: staging
     
@@ -37,17 +32,17 @@ jobs:
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "echo '✅ SSH connection successful' && whoami && date"
 
-      - name: Copy services script
+      - name: Copy infrastructure script
         run: |
           scp -P ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
-            deployment/deploy-services.sh \
+            deployment/deploy-infrastructure.sh \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
 
-      - name: Execute services deployment
+      - name: Execute infrastructure deployment
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "chmod +x /tmp/deploy-services.sh && /tmp/deploy-services.sh '${{ github.event.inputs.services }}' ${{ github.event.inputs.force_rebuild && '--force-rebuild' || '' }}"
+            "chmod +x /tmp/deploy-infrastructure.sh && /tmp/deploy-infrastructure.sh ${{ github.event.inputs.force_rebuild && '--force-rebuild' || '' }}"
 
       - name: Cleanup SSH
         if: always()
