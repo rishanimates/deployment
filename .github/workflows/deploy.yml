@@ -1,4 +1,4 @@
-name: Infrastructure Deployment
+name: 🏗️ Deploy Fresh Infrastructure
 
 on:
   push:
@@ -16,9 +16,15 @@ on:
         options:
         - staging
         - production
+      force_rebuild:
+        description: 'Force complete rebuild (removes all existing data)'
+        required: false
+        default: false
+        type: boolean
 
 env:
   DEPLOY_PATH: '/opt/letzgo'
+  ENVIRONMENT: ${{ github.event.inputs.environment || 'staging' }}
 
 jobs:
   # ===========================================================================
@@ -134,14 +140,16 @@ jobs:
             letzgo-infrastructure.tar.gz \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/tmp/
 
-      - name: Deploy infrastructure on VPS
+      - name: Deploy fresh infrastructure on VPS
         run: |
           ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
           
           set -e
           
-          echo "🚀 Starting infrastructure deployment..."
+          echo "🚀 Starting fresh infrastructure deployment..."
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo "Force rebuild: ${{ github.event.inputs.force_rebuild }}"
           
           # Extract infrastructure files
           cd /tmp
