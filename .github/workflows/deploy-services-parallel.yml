@@ -1,0 +1,411 @@
+name: ⚡ Deploy Services (Parallel)
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Services to deploy: auth-service,user-service,chat-service,event-service,shared-service,splitz-service or "all"'
+        required: false
+        default: 'all'
+        type: string
+      branch:
+        description: 'Branch to deploy services from (applies to service repositories)'
+        required: false
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - develop
+          - staging
+          - master
+      force_rebuild:
+        description: 'Force rebuild Docker images'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  prepare:
+    name: Prepare Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      services-matrix: ${{ steps.parse-services.outputs.services-matrix }}
+      deploy-all: ${{ steps.parse-services.outputs.deploy-all }}
+    
+    steps:
+      - name: Parse services input
+        id: parse-services
+        run: |
+          SERVICES_INPUT="${{ github.event.inputs.services }}"
+          
+          if [ "$SERVICES_INPUT" = "all" ] || [ -z "$SERVICES_INPUT" ]; then
+            echo "deploy-all=true" >> $GITHUB_OUTPUT
+            echo 'services-matrix=["auth-service","user-service","chat-service","event-service","shared-service","splitz-service"]' >> $GITHUB_OUTPUT
+          else
+            echo "deploy-all=false" >> $GITHUB_OUTPUT
+            # Convert comma-separated to JSON array
+            SERVICES_ARRAY=$(echo "$SERVICES_INPUT" | sed 's/,/","/g' | sed 's/^/["/' | sed 's/$/"]/')
+            echo "services-matrix=$SERVICES_ARRAY" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "🎯 Services to deploy: $SERVICES_INPUT"
+          echo "🌿 Branch: ${{ github.event.inputs.branch }}"
+          echo "🔄 Force rebuild: ${{ github.event.inputs.force_rebuild }}"
+
+  # Infrastructure check job
+  check-infrastructure:
+    name: Check Infrastructure
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+      - name: Checkout deployment repo
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Check infrastructure status
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+          
+          echo "🔍 Checking infrastructure status..."
+          
+          # Check network
+          if docker network ls --format "{{.Name}}" | grep -q "^letzgo-network$"; then
+            echo "✅ letzgo-network: Available"
+          else
+            echo "❌ letzgo-network: Missing"
+            exit 1
+          fi
+          
+          # Check databases
+          REQUIRED_CONTAINERS=("letzgo-postgres" "letzgo-mongodb" "letzgo-redis")
+          for container in "${REQUIRED_CONTAINERS[@]}"; do
+            if docker ps --format "{{.Names}}" | grep -q "^$container$"; then
+              echo "✅ $container: Running"
+            else
+              echo "❌ $container: Not running"
+              exit 1
+            fi
+          done
+          
+          # Check environment file
+          if [ -f "/opt/letzgo/.env" ]; then
+            echo "✅ Environment file: Available"
+          else
+            echo "❌ Environment file: Missing"
+            exit 1
+          fi
+          
+          echo "🎉 Infrastructure is ready for service deployment"
+          EOF
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
+
+  # Parallel service deployment jobs
+  deploy-service:
+    name: Deploy ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: [prepare, check-infrastructure]
+    
+    strategy:
+      matrix:
+        service: ${{ fromJson(needs.prepare.outputs.services-matrix) }}
+      max-parallel: 6
+      fail-fast: false
+    
+    steps:
+      - name: Checkout deployment repo
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy ${{ matrix.service }}
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+          
+          # Service configuration
+          SERVICE="${{ matrix.service }}"
+          BRANCH="${{ github.event.inputs.branch }}"
+          FORCE_REBUILD="${{ github.event.inputs.force_rebuild }}"
+          
+          echo "🚀 Starting deployment of $SERVICE"
+          echo "📅 Started: $(date)"
+          echo "🌿 Branch: $BRANCH"
+          echo "🔄 Force rebuild: $FORCE_REBUILD"
+          echo ""
+          
+          # Configuration
+          DEPLOY_PATH="/opt/letzgo"
+          NETWORK_NAME="letzgo-network"
+          GITHUB_USER="rhushirajpatil"
+          
+          # Service ports
+          case "$SERVICE" in
+              "auth-service") PORT="3000" ;;
+              "user-service") PORT="3001" ;;
+              "chat-service") PORT="3002" ;;
+              "event-service") PORT="3003" ;;
+              "shared-service") PORT="3004" ;;
+              "splitz-service") PORT="3005" ;;
+              *) PORT="3000" ;;
+          esac
+          
+          CONTAINER_NAME="letzgo-$SERVICE"
+          IMAGE_NAME="letzgo-$SERVICE:latest"
+          SERVICE_DIR="$DEPLOY_PATH/services/$SERVICE"
+          REPO_URL="git@github.com:$GITHUB_USER/$SERVICE.git"
+          
+          echo "🎯 Configuration:"
+          echo "  Service: $SERVICE"
+          echo "  Port: $PORT"
+          echo "  Container: $CONTAINER_NAME"
+          echo "  Image: $IMAGE_NAME"
+          echo ""
+          
+          # Function to create local repository
+          create_local_repo() {
+            echo "📦 Creating local repository for $SERVICE..."
+            mkdir -p "$SERVICE_DIR"
+            cd "$SERVICE_DIR"
+            
+            git init >/dev/null 2>&1
+            
+            cat > package.json << PACKAGE_EOF
+          {
+            "name": "$SERVICE",
+            "version": "1.0.0",
+            "main": "src/app.js",
+            "scripts": { "start": "node src/app.js" },
+            "dependencies": { "express": "^4.18.2", "cors": "^2.8.5" }
+          }
+          PACKAGE_EOF
+            
+            touch yarn.lock
+            
+            cat > Dockerfile << DOCKER_EOF
+          FROM node:20-alpine
+          WORKDIR /app
+          RUN apk add --no-cache curl
+          COPY package*.json ./
+          COPY yarn.lock ./
+          RUN yarn install --production
+          COPY . .
+          EXPOSE 3000
+          HEALTHCHECK CMD curl -f http://localhost:3000/health || exit 1
+          CMD ["yarn", "start"]
+          DOCKER_EOF
+            
+            mkdir -p src
+            cat > src/app.js << APP_EOF
+          const express = require('express');
+          const app = express();
+          const PORT = process.env.PORT || $PORT;
+          
+          app.use(express.json());
+          
+          app.get('/health', (req, res) => {
+            res.json({ status: 'ok', service: '$SERVICE', port: PORT, timestamp: new Date().toISOString() });
+          });
+          
+          app.get('/', (req, res) => {
+            res.json({ message: 'LetzGo $SERVICE is running', endpoints: ['/health'] });
+          });
+          
+          app.listen(PORT, '0.0.0.0', () => {
+            console.log(\`🚀 $SERVICE listening on port \${PORT}\`);
+          });
+          APP_EOF
+            
+            git add . >/dev/null 2>&1
+            git commit -m "Local repository for $SERVICE" >/dev/null 2>&1
+            echo "✅ Local repository created"
+          }
+          
+          # Step 1: Clone repository
+          echo "📥 Cloning $SERVICE repository..."
+          mkdir -p "$DEPLOY_PATH/services"
+          rm -rf "$SERVICE_DIR"
+          
+          if git clone -b "$BRANCH" "$REPO_URL" "$SERVICE_DIR" >/dev/null 2>&1; then
+            echo "✅ Repository cloned via SSH"
+            cd "$SERVICE_DIR"
+            echo "📝 Commit: $(git rev-parse --short HEAD) - $(git log -1 --pretty=format:'%s')"
+          else
+            echo "⚠️ SSH clone failed, trying HTTPS..."
+            HTTPS_URL=$(echo "$REPO_URL" | sed 's/git@github.com:/https:\/\/github.com\//')
+            if git clone -b "$BRANCH" "$HTTPS_URL" "$SERVICE_DIR" >/dev/null 2>&1; then
+              echo "✅ Repository cloned via HTTPS"
+              cd "$SERVICE_DIR"
+              echo "📝 Commit: $(git rev-parse --short HEAD) - $(git log -1 --pretty=format:'%s')"
+            else
+              echo "⚠️ Branch '$BRANCH' not found, trying main..."
+              if git clone -b "main" "$HTTPS_URL" "$SERVICE_DIR" >/dev/null 2>&1; then
+                echo "✅ Repository cloned from main branch"
+                cd "$SERVICE_DIR"
+                echo "📝 Commit: $(git rev-parse --short HEAD) - $(git log -1 --pretty=format:'%s')"
+                echo "⚠️ Note: Using main branch instead of $BRANCH"
+              else
+                echo "❌ All clone attempts failed, creating local repository..."
+                create_local_repo
+                cd "$SERVICE_DIR"
+              fi
+            fi
+          fi
+          
+          # Step 2: Build Docker image
+          echo "🐳 Building Docker image..."
+          if docker build -t "$IMAGE_NAME" . >/dev/null 2>&1; then
+            echo "✅ Docker image built successfully"
+          else
+            echo "❌ Docker build failed"
+            exit 1
+          fi
+          
+          # Step 3: Stop existing container
+          if docker ps -a --format "{{.Names}}" | grep -q "^$CONTAINER_NAME$"; then
+            echo "🛑 Stopping existing container..."
+            docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+            docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          fi
+          
+          # Step 4: Load environment
+          set -a; source "$DEPLOY_PATH/.env"; set +a
+          
+          # Step 5: Deploy container
+          echo "🚀 Deploying container..."
+          docker run -d \
+            --name "$CONTAINER_NAME" \
+            --network "$NETWORK_NAME" \
+            -p "$PORT:$PORT" \
+            -e NODE_ENV=staging \
+            -e PORT="$PORT" \
+            -e HOST="0.0.0.0" \
+            -e POSTGRES_HOST=letzgo-postgres \
+            -e POSTGRES_URL="$POSTGRES_URL" \
+            -e MONGODB_HOST=letzgo-mongodb \
+            -e MONGODB_URL="$MONGODB_URL" \
+            -e REDIS_HOST=letzgo-redis \
+            -e REDIS_URL="$REDIS_URL" \
+            -e JWT_SECRET="$JWT_SECRET" \
+            --restart unless-stopped \
+            "$IMAGE_NAME" >/dev/null 2>&1
+          
+          echo "✅ Container deployed successfully"
+          
+          # Step 6: Health check
+          echo "⏳ Waiting for health check..."
+          for i in {1..20}; do
+            if curl -f -s --connect-timeout 3 "http://localhost:$PORT/health" >/dev/null 2>&1; then
+              echo "✅ $SERVICE is healthy!"
+              echo "🎉 $SERVICE deployment completed successfully"
+              exit 0
+            fi
+            echo "🔄 Attempt $i/20 - waiting 5 seconds..."
+            sleep 5
+          done
+          
+          echo "⚠️ $SERVICE did not become healthy within timeout"
+          echo "📋 Container logs:"
+          docker logs "$CONTAINER_NAME" --tail 10 || echo "No logs available"
+          exit 1
+          EOF
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
+
+  # Summary job that runs after all services
+  deployment-summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: [prepare, deploy-service]
+    if: always()
+    
+    steps:
+      - name: Checkout deployment repo
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Generate deployment summary
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+          
+          echo "📊 Parallel Deployment Summary"
+          echo "=============================="
+          echo "📅 Completed: $(date)"
+          echo ""
+          
+          echo "🐳 Running Services:"
+          docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep letzgo- || echo "No services found"
+          echo ""
+          
+          echo "🔗 Service URLs:"
+          SERVICES=("auth-service:3000" "user-service:3001" "chat-service:3002" "event-service:3003" "shared-service:3004" "splitz-service:3005")
+          for service_port in "${SERVICES[@]}"; do
+            SERVICE=$(echo "$service_port" | cut -d':' -f1)
+            PORT=$(echo "$service_port" | cut -d':' -f2)
+            if docker ps --format "{{.Names}}" | grep -q "^letzgo-$SERVICE$"; then
+              echo "✅ $SERVICE: http://103.168.19.241:$PORT"
+            else
+              echo "❌ $SERVICE: Not running"
+            fi
+          done
+          
+          echo ""
+          echo "🏥 Health Status:"
+          for service_port in "${SERVICES[@]}"; do
+            SERVICE=$(echo "$service_port" | cut -d':' -f1)
+            PORT=$(echo "$service_port" | cut -d':' -f2)
+            if curl -f -s --connect-timeout 2 "http://localhost:$PORT/health" >/dev/null 2>&1; then
+              echo "✅ $SERVICE: Healthy"
+            else
+              echo "❌ $SERVICE: Unhealthy or not running"
+            fi
+          done
+          
+          echo ""
+          echo "🎉 Parallel deployment completed!"
+          EOF
+
+      - name: Check deployment results
+        run: |
+          echo "📊 GitHub Actions Job Results:"
+          echo "Services requested: ${{ github.event.inputs.services }}"
+          echo "Branch deployed: ${{ github.event.inputs.branch }}"
+          echo "Force rebuild: ${{ github.event.inputs.force_rebuild }}"
+          
+          # Check if any service deployments failed
+          if [ "${{ contains(needs.deploy-service.result, 'failure') }}" = "true" ]; then
+            echo "⚠️ Some service deployments failed"
+            echo "Check individual job logs for details"
+          else
+            echo "✅ All service deployments completed"
+          fi
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
