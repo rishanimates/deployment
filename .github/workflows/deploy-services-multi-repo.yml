@@ -1,0 +1,187 @@
+name: 🚀 Deploy Services (Multiple Repositories)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repositories:
+        description: 'Repositories to deploy (comma-separated): auth-service,user-service,chat-service,event-service,shared-service,splitz-service'
+        required: true
+        default: 'auth-service,user-service,chat-service,event-service,shared-service,splitz-service'
+        type: string
+      branch:
+        description: 'Branch to deploy from each repository'
+        required: true
+        default: 'main'
+        type: choice
+        options:
+          - main
+          - develop
+          - staging
+          - master
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      force_rebuild:
+        description: 'Force rebuild Docker images'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  deploy-services:
+    name: Deploy ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ["auth-service", "user-service", "chat-service", "event-service", "shared-service", "splitz-service"]
+    
+    steps:
+      - name: Parse repositories input
+        id: parse-repos
+        run: |
+          # Convert comma-separated string to array
+          REPOS="${{ github.event.inputs.repositories }}"
+          if [[ "$REPOS" == *"${{ matrix.service }}"* ]]; then
+            echo "deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip if not in deployment list
+        if: steps.parse-repos.outputs.deploy == 'false'
+        run: |
+          echo "⏭️ Skipping ${{ matrix.service }} - not in deployment list"
+          exit 0
+
+      - name: Setup SSH
+        if: steps.parse-repos.outputs.deploy == 'true'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p ${{ secrets.VPS_PORT }} ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy ${{ matrix.service }}
+        if: steps.parse-repos.outputs.deploy == 'true'
+        run: |
+          ssh -p ${{ secrets.VPS_PORT }} -o StrictHostKeyChecking=no \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'DEPLOY_EOF'
+          
+          set -e
+          
+          # Configuration
+          SERVICE="${{ matrix.service }}"
+          BRANCH="${{ github.event.inputs.branch }}"
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          FORCE_REBUILD="${{ github.event.inputs.force_rebuild }}"
+          
+          DEPLOY_PATH="/opt/letzgo"
+          SERVICES_PATH="$DEPLOY_PATH/services"
+          SERVICE_PATH="$SERVICES_PATH/$SERVICE"
+          
+          # Service ports mapping
+          declare -A SERVICE_PORTS=(
+            ["auth-service"]="3000"
+            ["user-service"]="3001"
+            ["chat-service"]="3002"
+            ["event-service"]="3003"
+            ["shared-service"]="3004"
+            ["splitz-service"]="3005"
+          )
+          
+          PORT="${SERVICE_PORTS[$SERVICE]}"
+          
+          echo "🚀 Deploying $SERVICE from $BRANCH branch to $ENVIRONMENT"
+          echo "📍 Port: $PORT"
+          echo ""
+          
+          # Create services directory
+          mkdir -p "$SERVICES_PATH"
+          cd "$SERVICES_PATH"
+          
+          # Clone or update repository
+          if [ -d "$SERVICE_PATH" ]; then
+            echo "📥 Updating existing $SERVICE repository..."
+            cd "$SERVICE_PATH"
+            git fetch origin || true
+            git checkout "$BRANCH" || git checkout main || true
+            git pull origin "$BRANCH" || git pull origin main || echo "⚠️ Pull failed, continuing with existing code"
+          else
+            echo "📥 Cloning $SERVICE repository..."
+            if git clone "https://github.com/rhushirajpatil/$SERVICE.git" "$SERVICE_PATH"; then
+              echo "✅ Cloned via HTTPS"
+              cd "$SERVICE_PATH"
+              git checkout "$BRANCH" || git checkout main || echo "⚠️ Branch checkout failed"
+            else
+              echo "❌ Failed to clone $SERVICE repository"
+              exit 1
+            fi
+          fi
+          
+          cd "$SERVICE_PATH"
+          
+          # Install dependencies
+          echo "�� Installing dependencies..."
+          if command -v yarn &> /dev/null; then
+            yarn install --production
+          else
+            npm install --production
+          fi
+          
+          # Build Docker image
+          echo "🐳 Building Docker image for $SERVICE..."
+          
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            docker build --no-cache -t "letzgo-$SERVICE:latest" .
+          else
+            docker build -t "letzgo-$SERVICE:latest" .
+          fi
+          
+          # Stop and remove existing container
+          echo "🔄 Stopping existing $SERVICE container..."
+          docker stop "letzgo-$SERVICE" 2>/dev/null || true
+          docker rm "letzgo-$SERVICE" 2>/dev/null || true
+          
+          # Run new container
+          echo "🚀 Starting $SERVICE container..."
+          docker run -d \
+            --name "letzgo-$SERVICE" \
+            --network letzgo-network \
+            --restart unless-stopped \
+            -p "$PORT:$PORT" \
+            -e NODE_ENV="$ENVIRONMENT" \
+            -e PORT="$PORT" \
+            -e HOST="0.0.0.0" \
+            "letzgo-$SERVICE:latest"
+          
+          # Wait for service to be healthy
+          echo "⏳ Waiting for $SERVICE to be healthy..."
+          for i in {1..12}; do
+            if curl -f -s --connect-timeout 5 "http://localhost:$PORT/health" >/dev/null 2>&1; then
+              echo "✅ $SERVICE is healthy!"
+              break
+            fi
+            if [ $i -eq 12 ]; then
+              echo "❌ $SERVICE failed to become healthy"
+              exit 1
+            fi
+            echo "⏳ Attempt $i/12 - waiting 10 seconds..."
+            sleep 10
+          done
+          
+          echo "🎉 $SERVICE deployment completed successfully!"
+          echo "🔗 Service URL: http://103.168.19.241:$PORT"
+          echo "📚 API Documentation: http://103.168.19.241:$PORT/api-docs"
+          
+          DEPLOY_EOF
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f ~/.ssh/id_rsa
