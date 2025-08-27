@@ -98,31 +98,87 @@ setup_environment_file() {
         log_error "env.template not found in $DEPLOY_DIR"
     fi
     
-    # Generate secure passwords
-    POSTGRES_PASSWORD=$(openssl rand -base64 32 | tr -d '=+/' | head -c 32)
-    MONGODB_PASSWORD=$(openssl rand -base64 32 | tr -d '=+/' | head -c 32)
-    REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '=+/' | head -c 32)
-    RABBITMQ_PASSWORD=$(openssl rand -base64 32 | tr -d '=+/' | head -c 32)
-    JWT_SECRET=$(openssl rand -base64 64 | tr -d '=+/' | head -c 64)
+    # Generate secure passwords (hex format for reliability)
+    POSTGRES_PASSWORD=$(openssl rand -hex 16)
+    MONGODB_PASSWORD=$(openssl rand -hex 16)
+    REDIS_PASSWORD=$(openssl rand -hex 16)
+    RABBITMQ_PASSWORD=$(openssl rand -hex 16)
+    JWT_SECRET=$(openssl rand -hex 32)
     SERVICE_API_KEY=$(openssl rand -hex 32)
     
-    # Create .env file from template
-    cp env.template .env
+    log_info "Generated secure passwords: POSTGRES(${#POSTGRES_PASSWORD}), MONGODB(${#MONGODB_PASSWORD}), JWT(${#JWT_SECRET})"
     
-    # Replace placeholder values with generated secrets
-    sed -i "s/your_secure_postgres_password_here/$POSTGRES_PASSWORD/g" .env
-    sed -i "s/your_secure_mongodb_password_here/$MONGODB_PASSWORD/g" .env
-    sed -i "s/your_secure_redis_password_here/$REDIS_PASSWORD/g" .env
-    sed -i "s/your_secure_rabbitmq_password_here/$RABBITMQ_PASSWORD/g" .env
-    sed -i "s/your_jwt_secret_key_here_at_least_32_characters_long/$JWT_SECRET/g" .env
-    sed -i "s/your_service_api_key_here_at_least_32_characters_long/$SERVICE_API_KEY/g" .env
-    
-    # Fix database connection URLs and names
-    sed -i "s/letzgo_db/letzgo/g" .env
-    sed -i "s/letzgo-postgres/postgres/g" .env
-    sed -i "s/letzgo-mongodb/mongodb/g" .env
-    sed -i "s/letzgo-redis/redis/g" .env
-    sed -i "s/letzgo-rabbitmq/rabbitmq/g" .env
+    # Create .env file directly with generated values
+    cat > .env << EOF
+# ==============================================================================
+# LetzGo Staging Environment Configuration - AUTO-GENERATED
+# ==============================================================================
+# Generated on: $(date)
+
+# --- Database Passwords ---
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+MONGODB_PASSWORD=$MONGODB_PASSWORD
+REDIS_PASSWORD=$REDIS_PASSWORD
+RABBITMQ_PASSWORD=$RABBITMQ_PASSWORD
+
+# --- Database Connection URLs ---
+POSTGRES_URL=postgresql://postgres:$POSTGRES_PASSWORD@postgres:5432/letzgo
+MONGODB_URL=mongodb://admin:$MONGODB_PASSWORD@mongodb:27017/letzgo?authSource=admin
+MONGODB_URI=mongodb://admin:$MONGODB_PASSWORD@mongodb:27017/letzgo?authSource=admin
+REDIS_URL=redis://:$REDIS_PASSWORD@redis:6379
+RABBITMQ_URL=amqp://admin:$RABBITMQ_PASSWORD@rabbitmq:5672
+
+# --- Individual Database Connection Parameters ---
+# MongoDB
+MONGODB_HOST=mongodb
+MONGODB_PORT=27017
+MONGODB_DATABASE=letzgo
+MONGODB_USERNAME=admin
+
+# Redis  
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+# PostgreSQL
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DATABASE=letzgo
+POSTGRES_USERNAME=postgres
+
+# RabbitMQ
+RABBITMQ_HOST=rabbitmq
+RABBITMQ_PORT=5672
+RABBITMQ_USERNAME=admin
+
+# --- Database Schema Configuration ---
+DB_SCHEMA=public
+
+# --- Application Secrets ---
+JWT_SECRET=$JWT_SECRET
+SERVICE_API_KEY=$SERVICE_API_KEY
+
+# --- Payment Gateway (Razorpay) ---
+RAZORPAY_KEY_ID=your_razorpay_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+
+# --- Storage Configuration ---
+STORAGE_PROVIDER=local
+
+# --- AWS S3 Configuration (if STORAGE_PROVIDER=s3) ---
+AWS_ACCESS_KEY_ID=your_aws_access_key_id
+AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
+AWS_REGION=us-east-1
+AWS_S3_BUCKET=your_s3_bucket_name
+
+# --- Cloudinary Configuration (if STORAGE_PROVIDER=cloudinary) ---
+CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
+CLOUDINARY_API_KEY=your_cloudinary_api_key
+CLOUDINARY_API_SECRET=your_cloudinary_api_secret
+
+# --- Domain Configuration ---
+DOMAIN_NAME=103.168.19.241
+API_DOMAIN=103.168.19.241
+EOF
     
     # Set proper permissions
     chmod 600 .env
