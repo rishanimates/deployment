@@ -466,7 +466,6 @@ main() {
     setup_directories
     open_firewall_ports
     generate_environment
-    create_database_schemas
     create_docker_compose
     
     if [ "$force_rebuild" = true ]; then
