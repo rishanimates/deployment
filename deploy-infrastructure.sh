@@ -396,6 +396,69 @@ wait_for_health() {
     return 0
 }
 
+# Align MongoDB admin user/password with .env.staging (idempotent)
+align_mongodb_credentials() {
+    log_step "🔐 Ensuring MongoDB admin credentials match environment..."
+
+    set -a; source "$ENV_FILE"; set +a
+    local user="${MONGODB_USERNAME:-admin}"
+    local pass="$MONGODB_PASSWORD"
+
+    if [ -z "$user" ] || [ -z "$pass" ]; then
+        log_warning "Mongo credentials not found in env; skipping alignment"
+        return 0
+    fi
+
+    # Determine mongo shell
+    local MS
+    if docker exec letzgo-mongodb sh -lc 'command -v mongosh >/dev/null 2>&1'; then
+        MS=mongosh
+    else
+        MS=mongo
+    fi
+
+    # Try authenticating with desired credentials
+    if docker exec letzgo-mongodb sh -lc "$MS --authenticationDatabase admin -u '$user' -p '$pass' --quiet --eval \"db.adminCommand('ping')\"" >/dev/null 2>&1; then
+        log_success "MongoDB admin credentials already aligned"
+        return 0
+    fi
+
+    log_warning "MongoDB admin auth failed; performing safe password alignment"
+
+    # Get data volume/source for /data/db
+    local VOL
+    VOL=$(docker inspect -f '{{ range .Mounts }}{{ if eq .Destination "/data/db" }}{{ .Source }}{{ end }}{{ end }}' letzgo-mongodb 2>/dev/null || true)
+
+    # Stop main Mongo container
+    docker stop letzgo-mongodb >/dev/null 2>&1 || true
+
+    # Start a temporary no-auth mongod on the same data and update/create user
+    docker run --rm -d --name mongo-noauth -v "$VOL":/data/db -p 27019:27017 mongo:6 \
+        mongod --dbpath /data/db --bind_ip_all --port 27017 --noauth >/dev/null
+
+    # Use mongosh if present else mongo
+    local MS2
+    if docker exec mongo-noauth sh -lc 'command -v mongosh >/dev/null 2>&1'; then
+        MS2=mongosh
+    else
+        MS2=mongo
+    fi
+
+    # Update or create admin user idempotently
+    docker exec mongo-noauth sh -lc "$MS2 --quiet --eval \"try{db.getSiblingDB('admin').updateUser('$user',{pwd:'$pass'});print('UPDATED')}catch(e){db.getSiblingDB('admin').createUser({user:'$user',pwd:'$pass',roles:[{role:'root',db:'admin'}]});print('CREATED')}\"" >/dev/null 2>&1 || true
+
+    # Stop temp and restart main
+    docker stop mongo-noauth >/dev/null 2>&1 || true
+    docker start letzgo-mongodb >/dev/null 2>&1 || true
+
+    # Re-test authentication
+    if docker exec letzgo-mongodb sh -lc "$MS --authenticationDatabase admin -u '$user' -p '$pass' --quiet --eval \"db.adminCommand('ping')\"" >/dev/null 2>&1; then
+        log_success "✅ MongoDB admin credentials aligned successfully"
+    else
+        log_warning "⚠️  MongoDB credentials alignment attempted but verification failed"
+    fi
+}
+
 # Verify database connectivity
 verify_databases() {
     log_step "🔍 Verifying database connectivity..."
@@ -477,6 +540,8 @@ main() {
     fi
     
     deploy_infrastructure
+    # Align Mongo credentials before waiting on health to avoid restart loops
+    align_mongodb_credentials
     wait_for_health
     verify_databases
     display_status
