@@ -99,8 +99,16 @@ open_firewall_ports() {
 generate_environment() {
     log_step "🔐 Generating secure environment configuration..."
     
-    local postgres_pass=$(openssl rand -hex 20)
-    local mongodb_pass=$(openssl rand -hex 20)
+    # Preserve existing secrets if env file already exists
+    local existing_postgres_pass=""
+    local existing_mongodb_pass=""
+    if [ -f "$ENV_FILE" ]; then
+        existing_postgres_pass=$(grep -E '^POSTGRES_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '\r')
+        existing_mongodb_pass=$(grep -E '^MONGODB_PASSWORD=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '\r')
+    fi
+
+    local postgres_pass=${existing_postgres_pass:-$(openssl rand -hex 20)}
+    local mongodb_pass=${existing_mongodb_pass:-$(openssl rand -hex 20)}
     local redis_pass=$(openssl rand -hex 20)
     local rabbitmq_pass=$(openssl rand -hex 20)
     local jwt_secret=$(openssl rand -hex 32)
