@@ -79,6 +79,22 @@ setup_directories() {
     log_success "Directory structure created"
 }
 
+# Open firewall ports if UFW is available
+open_firewall_ports() {
+    log_step "🔥 Configuring firewall for external access (if UFW available)..."
+
+    if command -v ufw >/dev/null 2>&1; then
+        sudo ufw allow 5432/tcp >/dev/null 2>&1 || true  # PostgreSQL
+        # Optional: open others if needed externally
+        # sudo ufw allow 27017/tcp >/dev/null 2>&1 || true # MongoDB
+        # sudo ufw allow 6379/tcp  >/dev/null 2>&1 || true # Redis
+        # sudo ufw allow 15672/tcp >/dev/null 2>&1 || true # RabbitMQ UI
+        log_success "UFW rules updated for PostgreSQL (5432)"
+    else
+        log_warning "UFW not installed; skipping firewall configuration"
+    fi
+}
+
 # Generate secure environment
 generate_environment() {
     log_step "🔐 Generating secure environment configuration..."
@@ -616,6 +632,7 @@ main() {
     fi
     
     setup_directories
+    open_firewall_ports
     generate_environment
     create_database_schemas
     create_docker_compose
