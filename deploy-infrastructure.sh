@@ -136,6 +136,10 @@ MONGODB_DATABASE=letzgo
 MONGODB_URL=mongodb://admin:$mongodb_pass@letzgo-mongodb:27017/letzgo?authSource=admin
 MONGODB_URI=mongodb://admin:$mongodb_pass@letzgo-mongodb:27017/letzgo?authSource=admin
 
+# Event Service (Mongo) - for plugin/lifecycle data
+EVENTS_MONGODB_DATABASE=letzgo_events
+EVENTS_MONGODB_URI=mongodb://admin:$mongodb_pass@letzgo-mongodb:27017/letzgo_events?authSource=admin
+
 # Redis Configuration
 REDIS_HOST=letzgo-redis
 REDIS_PORT=6379
