@@ -179,7 +179,6 @@ SPLITZ_SERVICE_EXTERNAL_URL=http://103.168.19.241:3005
 CORS_ORIGIN=http://103.168.19.241:*,http://localhost:*
 
 # Other Settings
-DB_SCHEMA=public
 STORAGE_PROVIDER=local
 
 # Docker Network
@@ -190,173 +189,8 @@ EOF
     log_success "Environment configuration generated"
 }
 
-# Create database schemas - will be continued in next message due to length
-create_database_schemas() {
-    log_step "📊 Creating database schemas..."
-    
-    # PostgreSQL schema
-    cat > "$DEPLOY_PATH/database/init/01-init-postgres.sql" << 'EOF'
--- LetzGo PostgreSQL Database Initialization
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "timescaledb" CASCADE;
-
--- Users table
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    username VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    phone VARCHAR(20) UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
-    first_name VARCHAR(100),
-    last_name VARCHAR(100),
-    bio TEXT,
-    avatar_url VARCHAR(500),
-    birth_date DATE,
-    is_email_verified BOOLEAN DEFAULT FALSE,
-    is_phone_verified BOOLEAN DEFAULT FALSE,
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Groups table
-CREATE TABLE IF NOT EXISTS groups (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    avatar_url VARCHAR(500),
-    created_by UUID REFERENCES users(id),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Group memberships
-CREATE TABLE IF NOT EXISTS group_memberships (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    group_id UUID REFERENCES groups(id) ON DELETE CASCADE,
-    role VARCHAR(20) DEFAULT 'member',
-    joined_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(user_id, group_id)
-);
-
--- Events table
-CREATE TABLE IF NOT EXISTS events (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    title VARCHAR(200) NOT NULL,
-    description TEXT,
-    location VARCHAR(500),
-    start_time TIMESTAMPTZ NOT NULL,
-    end_time TIMESTAMPTZ,
-    created_by UUID REFERENCES users(id),
-    group_id UUID REFERENCES groups(id),
-    max_participants INTEGER,
-    is_public BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Event participants
-CREATE TABLE IF NOT EXISTS event_participants (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    event_id UUID REFERENCES events(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    status VARCHAR(20) DEFAULT 'going',
-    joined_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(event_id, user_id)
-);
-
--- Expenses table
-CREATE TABLE IF NOT EXISTS expenses (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    title VARCHAR(200) NOT NULL,
-    description TEXT,
-    amount DECIMAL(10,2) NOT NULL,
-    currency VARCHAR(3) DEFAULT 'INR',
-    paid_by UUID REFERENCES users(id),
-    group_id UUID REFERENCES groups(id),
-    event_id UUID REFERENCES events(id),
-    category VARCHAR(50),
-    receipt_url VARCHAR(500),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Expense splits
-CREATE TABLE IF NOT EXISTS expense_splits (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    expense_id UUID REFERENCES expenses(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    amount DECIMAL(10,2) NOT NULL,
-    is_paid BOOLEAN DEFAULT FALSE,
-    paid_at TIMESTAMPTZ,
-    UNIQUE(expense_id, user_id)
-);
-
--- Create indexes
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
-CREATE INDEX IF NOT EXISTS idx_group_memberships_user_id ON group_memberships(user_id);
-CREATE INDEX IF NOT EXISTS idx_events_created_by ON events(created_by);
-CREATE INDEX IF NOT EXISTS idx_expenses_paid_by ON expenses(paid_by);
-
--- Grant permissions
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres;
-EOF
-
-    # MongoDB schema
-    cat > "$DEPLOY_PATH/database/init/01-init-mongodb.js" << 'EOF'
-// LetzGo MongoDB Database Initialization
-print('🚀 Starting LetzGo MongoDB initialization...');
-
-db = db.getSiblingDB('letzgo');
-
-// Chat rooms collection
-db.createCollection('chat_rooms', {
-  validator: {
-    $jsonSchema: {
-      bsonType: 'object',
-      required: ['name', 'type', 'created_by', 'created_at'],
-      properties: {
-        name: { bsonType: 'string', maxLength: 100 },
-        type: { enum: ['group', 'event', 'direct'] },
-        description: { bsonType: 'string', maxLength: 500 },
-        participants: { bsonType: 'array', items: { bsonType: 'string' } },
-        created_by: { bsonType: 'string' },
-        created_at: { bsonType: 'date' }
-      }
-    }
-  }
-});
-
-// Expenses collection
-db.createCollection('expenses', {
-  validator: {
-    $jsonSchema: {
-      bsonType: 'object',
-      required: ['title', 'amount', 'currency', 'paid_by', 'group_id', 'created_at'],
-      properties: {
-        title: { bsonType: 'string', maxLength: 200 },
-        amount: { bsonType: 'number', minimum: 0 },
-        currency: { bsonType: 'string', pattern: '^[A-Z]{3}$' },
-        paid_by: { bsonType: 'string' },
-        group_id: { bsonType: 'string' },
-        created_at: { bsonType: 'date' }
-      }
-    }
-  }
-});
-
-// Create indexes
-db.chat_rooms.createIndex({ 'created_at': -1 });
-db.expenses.createIndex({ 'group_id': 1, 'created_at': -1 });
-
-print('✅ LetzGo MongoDB initialization completed!');
-EOF
-
-    log_success "Database schemas created"
-}
+## Skipping database schema creation here.
+## Each service will own its schema and migrate on startup.
 
 # Create Docker Compose configuration
 create_docker_compose() {
@@ -389,7 +223,6 @@ services:
       - "5432:5432"
     volumes:
       - letzgo-postgres-data:/var/lib/postgresql/data
-      - ./database/init:/docker-entrypoint-initdb.d:ro
     networks:
       - letzgo-network
     restart: unless-stopped
@@ -410,7 +243,6 @@ services:
       - "27017:27017"
     volumes:
       - letzgo-mongodb-data:/data/db
-      - ./database/init:/docker-entrypoint-initdb.d:ro
     networks:
       - letzgo-network
     restart: unless-stopped
