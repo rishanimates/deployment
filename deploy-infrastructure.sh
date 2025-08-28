@@ -434,8 +434,9 @@ align_mongodb_credentials() {
     log_warning "MongoDB admin auth failed; performing safe password alignment"
 
     # Get data volume/source for /data/db
+    # Prefer named volume for /data/db to avoid host-path differences
     local VOL
-    VOL=$(docker inspect -f '{{ range .Mounts }}{{ if eq .Destination "/data/db" }}{{ .Source }}{{ end }}{{ end }}' letzgo-mongodb 2>/dev/null || true)
+    VOL=$(docker inspect -f '{{ range .Mounts }}{{ if eq .Destination "/data/db" }}{{ .Name }}{{ end }}{{ end }}' letzgo-mongodb 2>/dev/null || true)
 
     # Stop main Mongo container
     docker stop letzgo-mongodb >/dev/null 2>&1 || true
@@ -459,11 +460,18 @@ align_mongodb_credentials() {
     docker stop mongo-noauth >/dev/null 2>&1 || true
     docker start letzgo-mongodb >/dev/null 2>&1 || true
 
-    # Re-test authentication
-    if docker exec letzgo-mongodb sh -lc "$MS --authenticationDatabase admin -u '$user' -p '$pass' --quiet --eval \"db.adminCommand('ping')\"" >/dev/null 2>&1; then
+    # Re-test authentication with retries to allow startup
+    local ok=0
+    for i in {1..10}; do
+        if docker exec letzgo-mongodb sh -lc "$MS --authenticationDatabase admin -u '$user' -p '$pass' --quiet --eval \"db.adminCommand('ping')\"" >/dev/null 2>&1; then
+            ok=1; break
+        fi
+        sleep 2
+    done
+    if [ "$ok" -eq 1 ]; then
         log_success "✅ MongoDB admin credentials aligned successfully"
     else
-        log_warning "⚠️  MongoDB credentials alignment attempted but verification failed"
+        log_warning "⚠️  MongoDB credentials alignment attempted but verification failed after retries"
     fi
 }
 
